@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 
 #include <stdint.h>
 
@@ -16,15 +17,16 @@
 #include "hash/hash.h"
 #include "ip/ip.h"
 
+#pragma pack(1)
+
 #define MTU	1500
 
 
-// Flags
-#define FRAG 		0x1
-
-#pragma pack(1)
-
 // RET values
+
+#define MEMERR		1
+#define SYSERR		2
+
 
 #define CORRUPT		1
 #define ACCEPT		0
@@ -59,6 +61,9 @@ uint8_t udp_check(udp *package);
 uint16_t udp_checksum(uint16_t lenght, uint8_t *msg);
 void udp_package_loss();
 
+void see_package(uint8_t *msg);
+void turn_end(int32_t sig);
+uint8_t nodata(uint8_t *head);
 
 // Global
 
@@ -69,26 +74,28 @@ queue *tr_queue	= NULL;
 pthread_mutex_t q_write = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t	wake	= PTHREAD_COND_INITIALIZER;
 
-
+uint8_t end;
 
 
 int main(int argc, char *argv[])
 {
 	uint32_t ret;
+	uint8_t  err;
 
-	uint16_t done;
-	uint16_t sum;
-
-	uint16_t flags;
-	udp_header *header;
-
-
-
-
+	
+	// Volume Control
+	end = 0;
+	signal(SIGUSR1, turn_end);
 
 	// Thread Control
 	pthread_t tid[NTHREADS];
-	tr_queue = queue_init(MTU); // Valor aleatório	
+	tr_queue = queue_init(200, MTU); // Valor aleatório	
+	if (!tr_queue)
+	{
+		printf("Failed to allocate queue.\n");
+		return MEMERR;
+	}
+					 
 
 	for (int i = 0; i < NTHREADS; i++)
 	{
@@ -97,38 +104,81 @@ int main(int argc, char *argv[])
 
 
 	// Fragmentation Control
-	fr_hash = hash_init(MTU);
+	fr_hash = hash_init(65536);
+	if (!fr_hash)
+	{
+		printf("Failed to allocate hash.\n");
+		return MEMERR;
+	}
 
 	// RECEIVE
 	int fd = set_TUN();
+	if (fd < 0)
+	{
+		return 1;
+	}
 
 	// Configure TUN
-	system("sudo ip link set dev tun0 up");
-	system("sudo ip route add 10.0.0.0/24 dev tun0");
+	err = system("sudo ip link set dev tun0 up");
+	if (err == 127 || err < 0)
+	{
+		printf("System error.\n");
+		return SYSERR;
+	}
+
+	err = system("sudo ip route add 10.0.0.0/24 dev tun0");
+	if (err == 127 || err < 0)
+	{
+		printf("System error.\n");
+		return SYSERR;
+	}
 
 
-	while (1) //SIGNAL CTRL + C
-	{	
-		int16_t up = read(fd, (void *) off_enq(tr_queue), MTU);
-		if (!up)
+	while (!end) // kill 10
+	{
+		pthread_mutex_lock(&q_write);	
+		uint8_t *addr = off_enq(tr_queue);
+		pthread_mutex_unlock(&q_write);
+
+		int16_t up = read(fd, (void *) addr, MTU);
+
+		printf("%02x\n", *addr);
+		if (up < 0 || nodata(addr))
+		{
 			continue;
+		}
 
 		pthread_mutex_lock(&q_write);
 		set_tail(tr_queue);
 
-		printf("Thread activated.\n");
-		fflush(0);
+		pthread_cond_signal(&wake);
+		pthread_mutex_unlock(&q_write);
+		
+		sleep(1);
+	}	
 
+	printf("EXITING.\n");
+
+	// Kill threads
+	for (uint32_t i = 0; i < NTHREADS; i++)
+	{
+		pthread_mutex_lock(&q_write);
 		pthread_cond_signal(&wake);
 		pthread_mutex_unlock(&q_write);
 	}	
-
-
 
 	// RULES
 
 
 	// RESULT
+	
+
+	// Cleanup
+	free_queue(tr_queue);
+	free_hash(fr_hash);	
+
+
+	printf("EXITED.\n");
 	return 0;
 }
 
@@ -137,7 +187,7 @@ uint32_t set_TUN()
 	uint32_t fd = open("/dev/net/tun", O_RDWR);
 	if (fd == -1)
 	{
-		perror("open error.\n");
+		perror("Open error.\n");
 		return -1;
 	}
 
@@ -164,19 +214,16 @@ uint32_t set_TUN()
 void *start_worker(void *arg)
 {
 	queue *q = arg;
-	uint8_t *copy;
+	uint8_t *copy = (uint8_t *) malloc(sizeof(uint8_t) * MTU);
 	uint8_t ret;
 
-	while (1)
+	while (!end)
 	{
 		pthread_mutex_lock(&q_write);
 		while (q->size == 0)
 		{
 			pthread_cond_wait(&wake, &q_write);
 		}
-
-		printf("%d is active.\n", (int ) pthread_self());
-		fflush(0);
 
 		uint8_t * package = dequeue(q);
 		if (package == NULL)
@@ -185,16 +232,21 @@ void *start_worker(void *arg)
 			continue;
 		}
 
-		*copy = *package; // Prevenir corrupção (caso o input seja muito maior que o output)
+		memcpy(copy, package, 48); // Prevenir corrupção (caso o input seja muito maior que o output)
 
 		pthread_mutex_unlock(&q_write);
 
 		ret = validate_package_thread(copy);
-		if (ret)
+		if (ret == 0)
 		{
-			printf("Package discarted.\n");
+			// Mais coisas
+			see_package(copy);
+
+			continue ;
 		}
 	}
+
+	free(copy);
 	pthread_exit(NULL);
 }
 
@@ -261,6 +313,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 	{
 		pack = set_udp(package_start);
 		ret = udp_check(pack);
+		free(pack);
 
 	}
 	else if (ipp->protocol == 6)
@@ -269,6 +322,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 	}
 
 
+	free(ipp);
 
 	return ret;	
 }
@@ -345,3 +399,28 @@ void udp_package_loss()
 	return ;
 }
 
+
+void see_package(uint8_t *msg)
+{
+	for (int i = 0; i < 100; i++)
+	{
+		printf("%02x", msg[i]);
+	}
+	printf("\n");
+}
+
+
+void turn_end(int32_t sig)
+{
+	end = 1;
+	return ;
+}
+
+uint8_t nodata(uint8_t *head)
+{
+
+	uint8_t hsiz = head[0] & 0x0F;
+	uint16_t len = hsiz? (head[2] << 8) | head[3]: 0;
+
+	return len? 0: 1;
+}

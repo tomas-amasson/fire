@@ -13,12 +13,11 @@ typedef struct {
 } queue;
 
 
-queue* queue_init(uint32_t max);
+queue* queue_init(uint32_t max, uint32_t size);
 
-uint8_t enqueue(queue *q, uint8_t *val);
 uint8_t* off_enq(queue *q);
 void 	set_tail(queue *q);
 uint8_t* dequeue(queue *q);
-
+void 	free_queue(queue *q);
 
 #endif
