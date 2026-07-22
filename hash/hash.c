@@ -9,7 +9,7 @@ hashnode *hashn_init(uint16_t id, uint16_t source, uint16_t destin, uint8_t prot
 	ret->source 	= source;
 	ret->destin 	= destin;
 	ret->protocol 	= protocol;
-	ret->miss	= 65535;
+	ret->miss	= 0;
 
 	ret->box 	= NULL;
 	ret->next 	= NULL;
@@ -154,11 +154,11 @@ fragment * frag_init(uint16_t offset, uint8_t *data, uint8_t MF, uint16_t size)
 
 uint8_t add_frag(hashnode * hn, fragment *fr)
 {	
-	hn->miss--;
+	hn->miss += fr->psize;
 
 	if (!fr->MF)
 	{
-		hn->miss = missing(fr->offset, hn->miss);
+		hn->miss = missing((fr->offset * 8) + fr->psize, hn->miss);
 	}
 
 	if (hn->box == NULL)
@@ -225,8 +225,7 @@ hashnode *search_hn(hash *h, uint16_t id, uint16_t source, uint16_t destin, uint
 
 uint16_t missing(uint16_t lenght, uint16_t miss)
 {
-	uint16_t current = miss - 65535;
-	return lenght - current;
+	return lenght - miss;
 }
 
 uint8_t * hash_obtain_package(hashnode *hn)

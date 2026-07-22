@@ -57,8 +57,8 @@ uint8_t tcp_check();
 
 
 udp *set_udp(uint8_t *payload);
-uint8_t udp_check(udp *package);
-uint16_t udp_checksum(uint16_t lenght, uint8_t *msg);
+uint8_t udp_check(udp *package, uint32_t source, uint32_t destin);
+uint16_t udp_checksum(uint32_t lenght, uint8_t *msg);
 void udp_package_loss();
 void udp_free(udp *pack);
 
@@ -289,12 +289,12 @@ uint8_t validate_package_thread(uint8_t *payload)
 	hashnode *target;
 
 	ip *ipp = ip_init(payload);
-	printf("ID = %d\n", ipp->id);
 	uint8_t *package_start = payload + (ipp->ihl * 4);
 
 
 	if (ipp->type == 4)
 	{
+
 		if (ipv4_check(payload))
 		{
 			free(ipp);
@@ -328,6 +328,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 		}
 	}
 	
+	printf("LAST:%hhd\n", last);
 	if (last)
 	{
 		// Desfragmentar
@@ -340,7 +341,8 @@ uint8_t validate_package_thread(uint8_t *payload)
 	if (ipp->protocol == 17) /* UDP */
 	{
 		pack = set_udp(package_start);
-		ret = udp_check(pack);
+		ret = udp_check(pack, ipp->from, ipp->to);
+		printf("RET:%hhd\n", ret); // DEBUG
 
 		udp_free(pack);
 	}
@@ -363,10 +365,16 @@ uint8_t ipv4_check(uint8_t *payload)
 		sum += from8to16(payload[i], payload[i + 1]);
 	}
 
-	sum += (sum / 65535) - 1;
-	sum = ~(sum);
-	sum = sum & 0xFFFF;
+	uint16_t add = (uint16_t)(sum >> 16);
+	while (add)
+	{
+		sum = sum & 0xFFFF;
+		sum += add;
+		add = (uint16_t)(sum >> 16);
 
+	}
+
+	sum = ~(sum) & 0xFFFF;
 	return (!sum) ? 0: 1;
 }
 
@@ -384,40 +392,79 @@ udp * set_udp(uint8_t *payload)
 	//Campos de 2 bytes   Campo de 1 byte
 	ret->header->source = from8to16(payload[0], payload[1]);
 	ret->header->destin = from8to16(payload[2], payload[3]);
-	ret->header->lenght = from8to16(payload[4], payload[5]);
+	ret->header->lenght = from8to16(payload[4], payload[5]); // Little endian
 	ret->header->checksum = from8to16(payload[6], payload[7]);
 
 	ret->msg = &payload[8];
 	return ret;
 }
 
-uint8_t udp_check(udp *package)
+uint8_t udp_check(udp *package, uint32_t source, uint32_t destin)
 {
 	udp_header *header 	= package->header;
 	uint8_t *msg		= package->msg;
-	uint16_t lenght		= header->lenght;
+	uint32_t lenght		= 0;
 
-	uint32_t ret;
+	uint8_t odd = 0;
+	lenght += header->lenght;
 
-	ret = ~(udp_checksum(lenght, msg));
-	if (ret != header->checksum)
+	if (lenght % 2 == 1)
 	{
-		return -1;
+		lenght += 1;
+		odd = 1;
 	}
-	return 0;
+	lenght += 12; // ips, 0x00, prot, upd, msg lenght
+
+	uint16_t ret;
+
+	uint8_t *pseudo = (uint8_t *) malloc(lenght * sizeof(uint8_t));
+	fill8from32(pseudo, source);
+	fill8from32((pseudo + 4), destin);
+
+	pseudo[8] = 0x00; 
+	pseudo[9] = 0x11;
+
+	fill8from16((pseudo + 10), header->lenght);
+
+	fill8from16((pseudo + 12), header->source);
+	fill8from16((pseudo + 14), header->destin);
+	fill8from16((pseudo + 16), header->lenght);
+	fill8from16((pseudo + 18), header->checksum);
+
+	memcpy((pseudo + 20), msg, (header->lenght * sizeof(uint8_t)) - 8);
+
+	if (odd)
+	{
+		pseudo[lenght - 1] = 0x00;
+	}
+	
+	ret = ~(udp_checksum(lenght, pseudo));
+	free(pseudo);
+	printf("RET checksum: %02x\n", ret);
+	printf("checksum: %02x\n", header->checksum);
+	return (!ret) ? 0: 1;
 }
 
-uint16_t udp_checksum(uint16_t lenght, uint8_t *msg)
+uint16_t udp_checksum(uint32_t lenght,  uint8_t *msg)
 {
-	uint16_t sum = 0;
-	lenght = lenght > 1500 ? 1500 : lenght;
+	uint32_t sum = 0;
 
-	for (uint32_t i = 0; i < lenght; i++)
+	for (uint32_t i = 0; i < lenght; i += 2)
 	{
-		sum += msg[i];
+		sum += from8to16(msg[i], msg[i + 1]);
 	}
 
-	return sum;
+	uint16_t add = (uint16_t)(sum >> 16);
+
+	while (add)
+	{
+		sum = sum & 0xFFFF;
+		sum += add;
+		add = (uint16_t)(sum >> 16);
+
+	}
+
+	return (uint16_t)(sum & 0xFFFF);
 }
 
 void udp_package_loss()

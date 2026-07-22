@@ -46,4 +46,21 @@ uint32_t from16to32(uint16_t a, uint16_t b)
         uint32_t ret = (a << 16) | b;
         return ret;
 }
-    
+
+void fill8from32(uint8_t *arr, uint32_t b)
+{
+	arr[0] = (uint8_t)(b >> 24);
+	arr[1] = (uint8_t)(b >> 16);
+	arr[2] = (uint8_t)(b >> 8);
+	arr[3] = (uint8_t) b;
+	
+	return ;
+}
+
+void fill8from16(uint8_t *arr, uint16_t b)
+{
+	arr[0] = (uint8_t)(b >> 8);
+	arr[1] = (uint8_t) b;
+
+	return ;
+}

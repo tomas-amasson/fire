@@ -29,6 +29,7 @@ ip* ip_init(uint8_t *payload);
 uint8_t from16to8(uint16_t a);
 uint16_t from8to16(uint8_t a, uint8_t b);
 uint32_t from16to32(uint16_t a, uint16_t b);
-
+void fill8from32(uint8_t *arr, uint32_t b);
+void fill8from16(uint8_t *arr, uint16_t b);
 
 #endif
