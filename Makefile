@@ -1,6 +1,6 @@
 
 CC = gcc
-FLAGS = -g
+FLAGS = -g -Wall
 TARGET = fire
 SRC = firewall.c stack/stack.c queue/queue.c hash/hash.c ip/ip.c
 

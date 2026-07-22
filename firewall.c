@@ -54,12 +54,13 @@ void * start_worker(void *arg);
 
 uint8_t ipv4_check(uint8_t *payload);
 uint8_t tcp_check();
+
+
 udp *set_udp(uint8_t *payload);
-
-
 uint8_t udp_check(udp *package);
 uint16_t udp_checksum(uint16_t lenght, uint8_t *msg);
 void udp_package_loss();
+void udp_free(udp *pack);
 
 void see_package(uint8_t *msg);
 void turn_end(int32_t sig);
@@ -73,6 +74,7 @@ hash *fr_hash 	= NULL;
 queue *tr_queue	= NULL;
 pthread_mutex_t q_write = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t	wake	= PTHREAD_COND_INITIALIZER;
+pthread_cond_t mwait 	= PTHREAD_COND_INITIALIZER;
 
 uint8_t end;
 
@@ -83,9 +85,11 @@ int main(int argc, char *argv[])
 	uint8_t  err;
 
 	
-	// Volume Control
+	//Package Volume Control
 	end = 0;
-	signal(SIGUSR1, turn_end);
+	struct sigaction sig;
+	sig.sa_handler = turn_end;
+	sigaction(SIGUSR1, &sig, NULL);
 
 	// Thread Control
 	pthread_t tid[NTHREADS];
@@ -97,14 +101,14 @@ int main(int argc, char *argv[])
 	}
 					 
 
-	for (int i = 0; i < NTHREADS; i++)
+	for (uint32_t i = 0; i < NTHREADS; i++)
 	{
 		pthread_create(&tid[i], NULL, (void *) start_worker, (void *) tr_queue);
 	}
 
 
 	// Fragmentation Control
-	fr_hash = hash_init(65536);
+	fr_hash = hash_init(65536); // 16 bit max (IP ID)
 	if (!fr_hash)
 	{
 		printf("Failed to allocate hash.\n");
@@ -115,7 +119,7 @@ int main(int argc, char *argv[])
 	int fd = set_TUN();
 	if (fd < 0)
 	{
-		return 1;
+		return SYSERR;
 	}
 
 	// Configure TUN
@@ -138,6 +142,16 @@ int main(int argc, char *argv[])
 	{
 		pthread_mutex_lock(&q_write);	
 		uint8_t *addr = off_enq(tr_queue);
+		if (!addr)
+		{
+			// queue maximum capacity
+			while (tr_queue->size == tr_queue->max - 1)
+			{
+				pthread_cond_wait(&mwait, &q_write);
+			}
+			pthread_mutex_unlock(&q_write);
+			continue;
+		}
 		pthread_mutex_unlock(&q_write);
 
 		int16_t up = read(fd, (void *) addr, MTU);
@@ -153,8 +167,6 @@ int main(int argc, char *argv[])
 
 		pthread_cond_signal(&wake);
 		pthread_mutex_unlock(&q_write);
-		
-		sleep(1);
 	}	
 
 	printf("EXITING.\n");
@@ -165,7 +177,13 @@ int main(int argc, char *argv[])
 		pthread_mutex_lock(&q_write);
 		pthread_cond_signal(&wake);
 		pthread_mutex_unlock(&q_write);
-	}	
+	}
+
+	// Wait for threads to exit
+	for (uint32_t i = 0; i < NTHREADS; i++)
+	{
+		pthread_join(tid[i], (void **) &ret);
+	}
 
 	// RULES
 
@@ -214,25 +232,33 @@ uint32_t set_TUN()
 void *start_worker(void *arg)
 {
 	queue *q = arg;
-	uint8_t *copy = (uint8_t *) malloc(sizeof(uint8_t) * MTU);
+	uint8_t *copy = (uint8_t *) calloc(MTU, sizeof(uint8_t));
 	uint8_t ret;
 
 	while (!end)
 	{
 		pthread_mutex_lock(&q_write);
-		while (q->size == 0)
+		while (q->size == 0 && !end)
 		{
 			pthread_cond_wait(&wake, &q_write);
+		}
+
+		if (end)
+		{ 
+			pthread_mutex_unlock(&q_write);
+			break;
 		}
 
 		uint8_t * package = dequeue(q);
 		if (package == NULL)
 		{
 			printf("DISCARTED.\n");
+
+			pthread_mutex_unlock(&q_write);
 			continue;
 		}
 
-		memcpy(copy, package, 48); // Prevenir corrupção (caso o input seja muito maior que o output)
+		memcpy(copy, package, MTU); // Prevenir corrupção (caso o input seja muito maior que o output)
 
 		pthread_mutex_unlock(&q_write);
 
@@ -263,14 +289,15 @@ uint8_t validate_package_thread(uint8_t *payload)
 	hashnode *target;
 
 	ip *ipp = ip_init(payload);
+	printf("ID = %d\n", ipp->id);
 	uint8_t *package_start = payload + (ipp->ihl * 4);
 
-		
 
 	if (ipp->type == 4)
 	{
 		if (ipv4_check(payload))
 		{
+			free(ipp);
 			return CORRUPT;
 		}
 	}
@@ -296,6 +323,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 		// Caso não seja o último fragmento larga a mão
 		if (!last)
 		{
+			free(ipp);
 			return ACCEPT;
 		}
 	}
@@ -313,8 +341,8 @@ uint8_t validate_package_thread(uint8_t *payload)
 	{
 		pack = set_udp(package_start);
 		ret = udp_check(pack);
-		free(pack);
 
+		udp_free(pack);
 	}
 	else if (ipp->protocol == 6)
 	{
@@ -323,7 +351,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 
 
 	free(ipp);
-
 	return ret;	
 }
 
@@ -368,10 +395,9 @@ uint8_t udp_check(udp *package)
 {
 	udp_header *header 	= package->header;
 	uint8_t *msg		= package->msg;
-	unsigned int flags	= package->flags;
 	uint16_t lenght		= header->lenght;
 
-	int ret;
+	uint32_t ret;
 
 	ret = ~(udp_checksum(lenght, msg));
 	if (ret != header->checksum)
@@ -386,7 +412,7 @@ uint16_t udp_checksum(uint16_t lenght, uint8_t *msg)
 	uint16_t sum = 0;
 	lenght = lenght > 1500 ? 1500 : lenght;
 
-	for (int i = 0; i < lenght; i++)
+	for (uint32_t i = 0; i < lenght; i++)
 	{
 		sum += msg[i];
 	}
@@ -402,7 +428,7 @@ void udp_package_loss()
 
 void see_package(uint8_t *msg)
 {
-	for (int i = 0; i < 100; i++)
+	for (uint32_t i = 0; i < 100; i++)
 	{
 		printf("%02x", msg[i]);
 	}
@@ -423,4 +449,11 @@ uint8_t nodata(uint8_t *head)
 	uint16_t len = hsiz? (head[2] << 8) | head[3]: 0;
 
 	return len? 0: 1;
+}
+
+void udp_free(udp *pack)
+{
+	free(pack->header);
+	free(pack);
+	return ;
 }

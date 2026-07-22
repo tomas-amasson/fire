@@ -20,6 +20,7 @@ hashnode *hashn_init(uint16_t id, uint16_t source, uint16_t destin, uint8_t prot
 void free_hashn(hashnode *hn)
 {
 
+	// limpa fragmentos
 	fragment * current = hn->box;
 	if (current == NULL)
 	{
@@ -46,7 +47,7 @@ void free_hashn(hashnode *hn)
 hash * hash_init(uint32_t max)
 {
 	hash *ret = (hash *) malloc(sizeof(hash));
-	ret->array = (hashnode **) malloc(sizeof(hashnode *) * max);
+	ret->array = (hashnode **) calloc(max, sizeof(hashnode *));
 
 	ret->max = max;
 
@@ -55,13 +56,13 @@ hash * hash_init(uint32_t max)
 
 void free_hash(hash *h)
 {
-	for (int i = 0; i < h->max; i++)
+	for (uint32_t i = 0; i < h->max; i++)
 	{
 		go_down(h->array[i]);
 	}
 
+	free(h->array);
 	free(h);
-
 	return ;
 }
 
@@ -73,8 +74,9 @@ void go_down(hashnode *hn)
 	}
 
 	go_down(hn->next);
+	free_hashn(hn);
 
-	free(hn);
+	return ;
 }
 
 void add_hashn(hash *h, hashnode * hn)
@@ -242,7 +244,7 @@ uint8_t * hash_obtain_package(hashnode *hn)
 		ret = realloc(ret, sizeof(uint8_t) * (psize + current));
 		
 
-		for (int i = current; i < psize; i++)
+		for (uint32_t i = current; i < psize; i++)
 		{
 			ret[i] = fr->data[i];
 		}

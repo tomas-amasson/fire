@@ -22,7 +22,7 @@ queue* queue_init(uint32_t max, uint32_t size)
 
 	while (max)
 	{
-		ret->array[max - 1] = (uint8_t *) malloc(sizeof(uint8_t) * size);
+		ret->array[max - 1] = (uint8_t *) calloc(size, sizeof(uint8_t));
 		max--;
 	}
 
@@ -36,6 +36,11 @@ queue* queue_init(uint32_t max, uint32_t size)
 
 uint8_t* off_enq(queue *q)
 {
+	if (q->size == q->max - 1)
+	{
+		return NULL;
+	}
+
 	return q->array[q->tail];
 }
 
