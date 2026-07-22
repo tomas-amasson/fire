@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#pragma pack(1)
+
 typedef struct {
 	uint8_t type;
 	uint8_t ihl;
