@@ -2,6 +2,7 @@
 #define HASH_H
 
 #include <stdint.h>
+#include <string.h>
 
 #pragma pack(1)
 

@@ -48,12 +48,13 @@ typedef struct {
 } udp;
 
 uint32_t set_TUN();
-uint8_t  validate_package_thread(uint8_t *payload);
+uint8_t  validate_package_thread(uint8_t *payload, udp *pack);
 void * start_worker(void *arg);
 
 
 uint8_t ipv4_check(uint8_t *payload);
 uint8_t tcp_check();
+uint8_t check_stateless(udp *pack);
 
 
 udp *set_udp(uint8_t *payload);
@@ -156,7 +157,7 @@ int main(int argc, char *argv[])
 
 		int16_t up = read(fd, (void *) addr, MTU);
 
-		printf("%02x\n", *addr);
+		printf("%02x\n", *addr); // DEBUG
 		if (up < 0 || nodata(addr))
 		{
 			continue;
@@ -168,6 +169,23 @@ int main(int argc, char *argv[])
 		pthread_cond_signal(&wake);
 		pthread_mutex_unlock(&q_write);
 	}	
+
+
+
+	// RULES
+	
+	// Stateless
+		// IP
+		// Ports
+		// Protocol
+		// Flags
+		
+		
+
+	// RESULT
+	
+
+
 
 	printf("EXITING.\n");
 
@@ -184,11 +202,6 @@ int main(int argc, char *argv[])
 	{
 		pthread_join(tid[i], (void **) &ret);
 	}
-
-	// RULES
-
-
-	// RESULT
 	
 
 	// Cleanup
@@ -262,13 +275,20 @@ void *start_worker(void *arg)
 
 		pthread_mutex_unlock(&q_write);
 
-		ret = validate_package_thread(copy);
+		udp *pack;
+		ret = validate_package_thread(copy, pack);
 		if (ret == 0)
 		{
 			// Mais coisas
 			see_package(copy);
-
+			printf("PACKAGE APPROVED.\n"); // DEBUG
+			
+			check_stateless(pack);
 			continue ;
+		}
+		else
+		{
+			free(pack)
 		}
 	}
 
@@ -280,7 +300,7 @@ void *start_worker(void *arg)
 
 
 /* Thread Funcion */
-uint8_t validate_package_thread(uint8_t *payload)
+uint8_t validate_package_thread(uint8_t *payload, udp *pack)
 {
 
 	uint8_t last = 0;
@@ -328,7 +348,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 		}
 	}
 	
-	printf("LAST:%hhd\n", last);
 	if (last)
 	{
 		// Desfragmentar
@@ -342,9 +361,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 	{
 		pack = set_udp(package_start);
 		ret = udp_check(pack, ipp->from, ipp->to);
-		printf("RET:%hhd\n", ret); // DEBUG
-
-		udp_free(pack);
 	}
 	else if (ipp->protocol == 6)
 	{
@@ -440,8 +456,6 @@ uint8_t udp_check(udp *package, uint32_t source, uint32_t destin)
 	
 	ret = ~(udp_checksum(lenght, pseudo));
 	free(pseudo);
-	printf("RET checksum: %02x\n", ret);
-	printf("checksum: %02x\n", header->checksum);
 	return (!ret) ? 0: 1;
 }
 
@@ -503,4 +517,9 @@ void udp_free(udp *pack)
 	free(pack->header);
 	free(pack);
 	return ;
+}
+
+
+uint8_t check_stateless(udp *pack)
+{
 }

@@ -232,23 +232,15 @@ uint8_t * hash_obtain_package(hashnode *hn)
 {
 	uint8_t *ret = (uint8_t *) malloc(sizeof(uint8_t));
 	uint32_t current = 0;
-	uint32_t psize;
 
 	fragment *fr = hn->box;
-	psize = fr->psize;
 
 	while (fr)
 	{	
-		psize = fr->psize;
-		ret = realloc(ret, sizeof(uint8_t) * (psize + current));
-		
+		ret = realloc(ret, sizeof(uint8_t) * (fr->psize + current));
+		memcpy((ret + current), fr->data, fr->psize);
 
-		for (uint32_t i = current; i < psize; i++)
-		{
-			ret[i] = fr->data[i];
-		}
-
-		current += psize;
+		current += fr->psize;
 		fr = fr->forward;
 	}
 
