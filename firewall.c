@@ -47,6 +47,7 @@
 
 
 typedef struct rules{
+	uint8_t op;
 	uint8_t lim;
 	uint8_t ways;
 	uint32_t data;
@@ -352,7 +353,7 @@ uint32_t set_TUN()
 void *start_worker_rule(void *arg)
 {
 	queue *q = arg;
-	uint8_t *copy = (uint8_t *) calloc(sizeof(rules) + 1, sizeof(uint8_t));
+	uint8_t *copy = (uint8_t *) calloc(sizeof(rules), sizeof(uint8_t));
 
 	while (!end)
 	{
@@ -379,8 +380,8 @@ void *start_worker_rule(void *arg)
 		memcpy(copy, package, sizeof(rules));
 		pthread_mutex_unlock(&q_write);
 
-		rules *nr = (rules*) (copy + 1);
-		printf("lim: %hhd, ways: %hhd, data: %d\n", nr->lim, nr->ways, nr->data);
+		rules *nr = (rules*) (copy);
+		printf("lim: %hhd, ways: %hhd, data: %d\n", nr->lim, nr->ways, nr->data); // DEBUG
 
 		// Action
 		if (copy[0])
@@ -425,19 +426,7 @@ void *start_worker_rule(void *arg)
 				}
 				else
 				{
-					printf("NEW IP RULE: ");
-					uint8_t it = nr->lim >> 3;
-					for (; it; it--)
-					{
-						if (it != 1)
-						{
-							printf("%hhd.",  (nr->data >> (32 - it)));
-						}
-						else
-						{
-							printf("%hhd %b\n", nr->data, nr->data);
-						}
-					}
+					printf("NEW IP RULE: %hhd.%hhd.%hhd.%hhd/%hd\n", nr->data >> 24, nr->data >> 16, nr->data >> 8, nr->data, nr->lim);
 				}
 			}
 		}
@@ -480,7 +469,6 @@ void *start_worker(void *arg)
 		memcpy(copy, package, MTU); // Prevenir corrupção (caso o input seja muito maior que o output)
 		pthread_mutex_unlock(&q_write);
 
-		pack = NULL;
 		ret = validate_package_thread(copy, &pack);
 		if (ret == 0)
 		{
@@ -497,21 +485,21 @@ void *start_worker(void *arg)
 			{
 				printf("PACKAGE ACCEPTED.\n");
 			}
+
+			free(pack);
 			continue ;
 		}
-		if (ret == 1)
+		else if (ret == 1)
 		{
 			printf("Package Protocol not supported.\n");
 			free(pack);
 		}
-		free(pack);
-		
+		else if (ret == 3)
+		{
+			printf("PACKAGE DENIED.\n");
+		}	
 	}
 
-	if (pack != NULL)
-	{
-		free(pack);
-	}
 	free(copy);
 	pthread_exit(NULL);
 }
@@ -534,7 +522,7 @@ uint8_t validate_package_thread(uint8_t *payload, void **pack)
 	if (ipp->type == 4)
 	{
 
-		if (ipv4_check(payload))
+		if (ipv4_check(payload) || check_stateless((void *) ipp, 0))
 		{
 			free(ipp);
 			return CORRUPT;
@@ -586,7 +574,7 @@ uint8_t validate_package_thread(uint8_t *payload, void **pack)
 		}
 
 		ret = udp_check(*pack, ipp->from, ipp->to);
-		decode(*pack); // DEBUG
+		//decode(*pack); // DEBUG
 	}
 	else if (ipp->protocol == 6)
 	{
@@ -594,8 +582,16 @@ uint8_t validate_package_thread(uint8_t *payload, void **pack)
 		ret = tcp_check(pack);
 	}
 
+	if (ret == 1)
+	{
+		printf("HERE\n");
+		printf("%d - %d: %d", ipp->from, ipp->to, ipp->protocol);
+		see_package((uint8_t *) ipp);
+	}
 
 	free(ipp);
+	free(package_start);
+
 	return ret;	
 }
 
@@ -663,8 +659,13 @@ uint8_t nodata(uint8_t *head)
 uint8_t check_stateless(void *pack, uint8_t protocol)
 {
 	trtree *tree = port_rules;
-
-	if (protocol == 6)
+	if (!protocol)
+	{
+		ip *spec = (ip *) pack;
+		tree = ip_rules;
+		return blocked(tree, spec->to, 32, IN) || blocked(tree, spec->from, 32, OUT);
+	}
+	else if (protocol == 6)
 	{
 		tcp *spec = (tcp *) pack;
 		tree = ip_rules;
@@ -701,7 +702,7 @@ void load_stateless()
 		}
 		else
 		{
-			tr_insert(ip_rules, fdata.data, fdata.lim, fdata.ways);
+			tr_insert(ip_rules, fdata.data, fdata.lim + 8, fdata.ways);
 		}
 	}
 	close(fd);

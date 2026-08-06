@@ -36,7 +36,7 @@ int32_t main(int argc, char *argv[])
 	char *block 	= argv[3];
 	char *io	= argv[4];
 	rules info;
-	memset(&info, 0, sizeof(info));
+	memset(&info, 0, sizeof(struct rules));
 
 	if (!strcmp(op, "add") || !strcmp(op, "ADD"))
 	{
@@ -78,9 +78,9 @@ int32_t main(int argc, char *argv[])
 		for (; i && block; i--)
 		{
 			block = strtok(NULL, ".");
-			info.data |= atoi(block) << (i - 1 * 8);
+			info.data |= atoi(block) << ((i - 1) * 8);
 		}
-		info.lim  = (4 - i) * 8;
+		info.lim  = (3 - i) * 8;
 	}
 	else if (!strcmp(type, "port") || !strcmp(type, "PORT"))
 	{
