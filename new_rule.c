@@ -11,7 +11,12 @@
 
 #define SOCKPATH "rules.sock"
 
+#define IN 	0
+#define OUT 	1
+#define BOTH	2
+
 typedef struct rules{
+	uint8_t op;
 	uint8_t lim;
 	uint8_t ways;
 	uint32_t data;
@@ -20,13 +25,74 @@ typedef struct rules{
 
 int32_t main(int argc, char *argv[])
 {
-	if (argc < 3)
+	if (argc < 5)
 	{
-		printf("USAGE:\n./rule <type> <newrule>");
+		printf("USAGE:\n./rule <op> <type> <newrule> <in/out>");
 		return 0;
 	}
 
-	uint8_t type = atoi(argv[1]);
+	char *op	= argv[1];
+	char *type 	= argv[2];
+	char *block 	= argv[3];
+	char *io	= argv[4];
+	rules info;
+	memset(&info, 0, sizeof(info));
+
+	if (!strcmp(op, "add") || !strcmp(op, "ADD"))
+	{
+		info.op = 0;
+	}
+	else if (!strcmp(op, "rem") || !strcmp(op, "REM"))
+	{
+		info.op = 1;
+	}
+	else
+	{
+		printf("<op> can be either ADD or REM\n");
+	}
+
+	if (!strcmp(io, "out") || !strcmp(io, "OUT"))
+	{
+		info.ways = OUT;
+	}
+	else if (!strcmp(io, "in") || !strcmp(io, "IN"))
+	{
+		info.ways = IN;
+	}
+	else if (!strcmp(io, "both") || !strcmp(io, "BOTH"))
+	{
+		info.ways = BOTH;
+	}
+	else
+	{
+		printf("<in/out> can be either IN or OUT or BOTH\n");
+	}
+
+	// IP
+	if (!strcmp(type, "ip") || !strcmp(type, "IP"))
+	{
+		uint8_t i = 3;
+		block = strtok(block, ".");
+		info.data |= atoi(block) << 24;
+
+		for (; i && block; i--)
+		{
+			block = strtok(NULL, ".");
+			info.data |= atoi(block) << (i - 1 * 8);
+		}
+		info.lim  = (4 - i) * 8;
+	}
+	else if (!strcmp(type, "port") || !strcmp(type, "PORT"))
+	{
+		info.data = atoi(block);
+	}
+	else
+	{
+		printf("<type> can be either IP or PORT\n");
+		return 0;
+	}
+
+
 
 	// Send DGRAM
 	uint32_t sockfd = socket(AF_UNIX, SOCK_DGRAM, 0);
@@ -41,11 +107,10 @@ int32_t main(int argc, char *argv[])
 	destin.sun_family = AF_UNIX;
 	strncpy(destin.sun_path, SOCKPATH, sizeof(destin.sun_path));
 		
-	rules data = {8, 0, 0x0a000001};
 
 	socklen_t lenght = sizeof(destin);
 
-	if (sendto(sockfd, (void *) &data, sizeof(data), 0, (struct sockaddr *) &destin, lenght) < 0)
+	if (sendto(sockfd, (void *) &info, sizeof(info), 0, (struct sockaddr *) &destin, lenght) < 0)
 	{
 		printf("%s\n", strerror(errno));
 		printf("PACKAGE NOT SENT.\n");
@@ -53,6 +118,7 @@ int32_t main(int argc, char *argv[])
 	else
 	{
 		printf("PACKAGE SENT.\n");
+		printf("DATA: lim=%hhd, data=%d, ways=%d\n", info.lim, info.data, info.ways);
 	}
 
 	close(sockfd);

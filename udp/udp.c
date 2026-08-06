@@ -3,8 +3,16 @@
 udp * set_udp(uint8_t *payload)
 {
 	udp *ret = (udp *) malloc(sizeof(udp));
+	if (!ret)
+	{
+		return NULL;
+	}
 
 	ret->header = (udphdr *) malloc(sizeof(udphdr));
+	if (!ret->header)
+	{
+		return NULL;
+	}
 
 	//Campos de 2 bytes   Campo de 1 byte
 	ret->header->source = from8to16(payload[0], payload[1]);
@@ -13,6 +21,7 @@ udp * set_udp(uint8_t *payload)
 	ret->header->checksum = from8to16(payload[6], payload[7]);
 
 	ret->msg = &payload[8];
+
 	return ret;
 }
 
@@ -35,6 +44,8 @@ uint8_t udp_check(udp *package, uint32_t source, uint32_t destin)
 	uint16_t ret;
 
 	uint8_t *pseudo = (uint8_t *) malloc(lenght * sizeof(uint8_t));
+	memset(pseudo, 0, lenght * sizeof(uint8_t));
+
 	fill8from32(pseudo, source);
 	fill8from32((pseudo + 4), destin);
 
@@ -56,6 +67,7 @@ uint8_t udp_check(udp *package, uint32_t source, uint32_t destin)
 	}
 	
 	ret = ~(udp_checksum(lenght, pseudo));
+
 	free(pseudo);
 	return (!ret) ? 0: 1;
 }
