@@ -25,6 +25,7 @@ typedef struct {
 } ip;
 
 ip* ip_init(uint8_t *payload);
+uint8_t ipv4_check(uint8_t *payload);
 
 uint8_t from16to8(uint16_t a);
 uint16_t from8to16(uint8_t a, uint8_t b);

@@ -57,6 +57,7 @@ typedef struct rules{
 uint32_t set_TUN();
 void load_stateless();
 uint32_t setup_socket();
+uint32_t setup_exit();
 void save_rules(rules **newr, uint32_t size);
 
 uint8_t  validate_package_thread(uint8_t *payload, void **pack);
@@ -64,12 +65,12 @@ void * start_worker(void *arg);
 void * start_worker_rule(void *arg);
 
 
-uint8_t ipv4_check(uint8_t *payload);
 uint8_t check_stateless(void *pack, uint8_t protocol);
 
 void tcp_package_loss();
 void udp_package_loss();
 void package_denied();
+void send_ahead(void *pack);
 
 void see_package(uint8_t *msg);
 void decode(udp *pack);
@@ -392,7 +393,7 @@ void *start_worker_rule(void *arg)
 			}
 			else
 			{
-				tr_remove(ip_rules, nr->data, nr->lim);
+				tr_remove(ip_rules, nr->data, 32);
 			}
 		}
 		else
@@ -403,8 +404,13 @@ void *start_worker_rule(void *arg)
 
 			new_rules[rules_sz] = newr;
 			rules_sz++;
-			new_rules = (rules **) realloc(new_rules, sizeof(struct rules *) * rules_sz);
-
+			new_rules = (rules **) realloc(new_rules, sizeof(struct rules *) * (rules_sz + 1));
+			if (!new_rules)
+			{
+				printf("Unable to realloc.\n");
+				continue;
+			}
+				
 			if (!nr->lim)
 			{
 				if (tr_insert(port_rules, nr->data, 16, nr->ways))
@@ -484,6 +490,7 @@ void *start_worker(void *arg)
 			else
 			{
 				printf("PACKAGE ACCEPTED.\n");
+				send_ahead((void *)pack);
 			}
 
 			free(pack);
@@ -594,31 +601,6 @@ uint8_t validate_package_thread(uint8_t *payload, void **pack)
 
 	return ret;	
 }
-
-uint8_t ipv4_check(uint8_t *payload)
-{
-	uint32_t sum = 0;
-
-	for (uint8_t i = 0; i < 20; i += 2)
-	{
-		sum += from8to16(payload[i], payload[i + 1]);
-	}
-
-	uint16_t add = (uint16_t)(sum >> 16);
-	while (add)
-	{
-		sum = sum & 0xFFFF;
-		sum += add;
-		add = (uint16_t)(sum >> 16);
-
-	}
-
-	sum = ~(sum) & 0xFFFF;
-	return (!sum) ? 0: 1;
-}
-
-
-
 
 void udp_package_loss()
 {
@@ -776,5 +758,29 @@ void save_rules(rules **newr, uint32_t size)
 	}
 	close(rulesfd);
 
+	return ;
+}
+
+uint32_t setup_exit() // PARA INTERIOR SÓ ESCREVER EM TUNFD
+{
+	uint32_t exitfd = socket(AF_UNIX, SOCK_RAW, 0);
+	if (exitfd < 0)
+	{
+		return 0;
+	}
+	
+	struct sockaddr_un exaddr;
+
+	exaddr.sun_family = AF_UNIX;
+	
+	if (bind(exitfd, (struct sockaddr *) &exaddr, sizeof(exaddr)))
+	{
+	}
+	
+	return exitfd;
+}
+
+void send_ahead(void *pack)
+{
 	return ;
 }

@@ -64,3 +64,25 @@ void fill8from16(uint8_t *arr, uint16_t b)
 
 	return ;
 }
+
+uint8_t ipv4_check(uint8_t *payload)
+{
+	uint32_t sum = 0;
+
+	for (uint8_t i = 0; i < 20; i += 2)
+	{
+		sum += from8to16(payload[i], payload[i + 1]);
+	}
+
+	uint16_t add = (uint16_t)(sum >> 16);
+	while (add)
+	{
+		sum = sum & 0xFFFF;
+		sum += add;
+		add = (uint16_t)(sum >> 16);
+
+	}
+
+	sum = ~(sum) & 0xFFFF;
+	return (!sum) ? 0: 1;
+}

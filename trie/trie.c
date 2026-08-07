@@ -70,6 +70,7 @@ uint8_t tr_insert(trtree *t, uint32_t value, uint8_t deep, uint8_t ways)
 				}
 			}
 			target = target->right;
+			printf("1: %d - %d\n", (i == deep - 1), i);
 		}
 		else
 		{
@@ -82,11 +83,13 @@ uint8_t tr_insert(trtree *t, uint32_t value, uint8_t deep, uint8_t ways)
 				}
 			}
 			target = target->left;
+			printf("0: %d - %d\n", (i == deep - 1), i);
 		}
 
 		mask = (mask << 1);
 	}
 
+	target->block = 1;
 	target->ways = ways;
 	return 0;
 }
@@ -126,6 +129,7 @@ uint8_t blocked(trtree *t, uint32_t value, uint8_t deep, uint8_t ways)
 
 		else if (tracker->block && (tracker->ways == ways || tracker->ways > 1))
 		{
+			printf("%d (%b) - till: %b\n", value, value, value & mask); // DEBUG
 			return 1;
 		}
 	}
