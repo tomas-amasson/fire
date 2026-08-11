@@ -17,7 +17,7 @@ udp * set_udp(uint8_t *payload)
 	//Campos de 2 bytes   Campo de 1 byte
 	ret->header->source = from8to16(payload[0], payload[1]);
 	ret->header->destin = from8to16(payload[2], payload[3]);
-	ret->header->lenght = from8to16(payload[4], payload[5]); // Little endian
+	ret->header->lenght = from8to16(payload[4], payload[5]); 
 	ret->header->checksum = from8to16(payload[6], payload[7]);
 
 	ret->msg = &payload[8];
@@ -25,11 +25,16 @@ udp * set_udp(uint8_t *payload)
 	return ret;
 }
 
-uint8_t udp_check(udp *package, uint32_t source, uint32_t destin)
+uint8_t udp_check(udp *package, uint32_t source, uint32_t destin, uint32_t realsz)
 {
 	udphdr *header 		= package->header;
 	uint8_t *msg		= package->msg;
 	uint32_t lenght		= 0;
+
+	if (header->lenght > realsz)
+	{
+		return 1;
+	}
 
 	uint8_t odd = 0;
 	lenght += header->lenght;
@@ -59,7 +64,8 @@ uint8_t udp_check(udp *package, uint32_t source, uint32_t destin)
 	fill8from16((pseudo + 16), header->lenght);
 	fill8from16((pseudo + 18), header->checksum);
 
-	memcpy((pseudo + 20), msg, (header->lenght * sizeof(uint8_t)) - 8);
+	uint32_t ovfw = header->lenght * sizeof(uint8_t ) - 8;
+	memcpy((pseudo + 20), msg, ovfw);
 
 	if (odd)
 	{

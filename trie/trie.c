@@ -1,12 +1,11 @@
 #include "trie.h"
-#include <stdio.h>
-#include <stdlib.h>
 
-trnode * trnode_init(uint8_t block, uint8_t ways)
+trnode * trnode_init(uint8_t block, uint8_t ways, uint8_t deep)
 {
 	trnode *ret 	= (trnode *) malloc(sizeof(trnode));
 	ret->block	= block;
 	ret->ways	= ways;
+	ret->deep	= deep;
 
 	ret->left	= NULL;
 	ret->right	= NULL;
@@ -23,18 +22,16 @@ trtree * trtree_init()
 		return ret;
 	}
 
-	ret->root	= trnode_init(0, 2);
-
-	ret->root->left	 = trnode_init(0, 2);
-	ret->root->right = trnode_init(0, 2);
+	ret->size	= 0;
+	ret->root	= trnode_init(0, NONE, 1);
 
 	return ret;
 }
 
-trnode * tr_search(trtree *t, uint32_t value, uint8_t deep)
+trnode * tr_search(trtree *t, uint32_t value, uint8_t deep, uint8_t sz)
 {
 	trnode *target 	= t->root;
-	uint32_t mask 	= 0x1;
+	uint32_t mask 	= 1U << (sz - 1);
 
 	for (uint8_t i = 0; i < deep; i++)
 	{
@@ -46,15 +43,15 @@ trnode * tr_search(trtree *t, uint32_t value, uint8_t deep)
 		else
 			target = target->left;
 
-		mask = (mask << 1);
+		mask = (mask >> 1);
 	}
 
 	return target;
 }
 
-uint8_t tr_insert(trtree *t, uint32_t value, uint8_t deep, uint8_t ways)
+uint8_t tr_insert(trtree *t, uint32_t value, uint8_t deep, uint8_t ways, uint8_t sz)
 {
-	uint32_t mask	= 0x1;
+	uint32_t mask	= 1U << (sz - 1);
 	trnode * target = t->root; 
 
 	for (uint8_t i = 0; i < deep; i++)
@@ -63,47 +60,57 @@ uint8_t tr_insert(trtree *t, uint32_t value, uint8_t deep, uint8_t ways)
 		{
 			if (target->right == NULL)
 			{
-				target->right = trnode_init((uint8_t) (i == deep - 1), ways);
+				target->right = trnode_init(0, NONE, i + 1);
 				if (target->right == NULL)
 				{
 					return 1;
 				}
 			}
 			target = target->right;
-			printf("1: %d - %d\n", (i == deep - 1), i);
 		}
 		else
 		{
 			if (target->left == NULL)
 			{
-				target->left = trnode_init((uint8_t) (i == deep - 1), ways);
+				target->left = trnode_init(0, NONE, i + 1);
 				if (target->left == NULL)
 				{
 					return 1;
 				}
 			}
 			target = target->left;
-			printf("0: %d - %d\n", (i == deep - 1), i);
 		}
 
-		mask = (mask << 1);
+		mask = (mask >> 1);
 	}
 
-	target->block = 1;
-	target->ways = ways;
+	if (!target->block)
+	{
+		target->block = 1;
+		t->size++;
+	}
+	
+	target->ways |= ways;
+
 	return 0;
 }
 
-uint8_t tr_remove(trtree *t, uint32_t value, uint8_t deep)
+uint8_t tr_remove(trtree *t, uint32_t value, uint8_t deep, uint8_t ways, uint8_t sz)
 {
-	trnode * ret = tr_search(t, value, deep);
+	trnode * ret = tr_search(t, value, deep, sz);
 
 	if (!ret)
 	{
 		return 1;
 	}
 
-	ret->block = 0;
+	ret->ways &= ~ways;
+
+	if (ret->ways == NONE)
+	{
+		ret->block = 0;
+		t->size--;
+	}
 	return 0;
 }
 
@@ -111,7 +118,8 @@ uint8_t blocked(trtree *t, uint32_t value, uint8_t deep, uint8_t ways)
 {
 	trnode *tracker = t->root;
 
-	uint32_t mask = 0x1;
+	uint32_t mask = 1U << (deep - 1);
+
 
 	for (uint8_t i = 0; i < deep; i++)
 	{
@@ -120,21 +128,21 @@ uint8_t blocked(trtree *t, uint32_t value, uint8_t deep, uint8_t ways)
 		else
 			tracker = tracker->left;
 
-		mask = (mask << 1);
+		mask = (mask >> 1);
 
 		if (!tracker)
 		{
 			return 0;
 		}
 
-		else if (tracker->block && (tracker->ways == ways || tracker->ways > 1))
+		else if (tracker->block && (tracker->ways & ways))
 		{
-			printf("%d (%b) - till: %b\n", value, value, value & mask); // DEBUG
 			return 1;
 		}
+
 	}
 
-	return tracker->block && (tracker->ways == ways || tracker->ways > 1);
+	return tracker->block && (tracker->ways & ways);
 }
 
 void tr_free(trnode * node)
@@ -150,3 +158,31 @@ void tr_free(trnode * node)
 	free(node);
 }
 
+uint32_t * get_nodes(trtree *t, trnode **anodes, uint8_t deep)
+{
+	uint32_t *path = calloc(t->size + 1, sizeof(uint32_t));
+	uint32_t id = 0;
+
+	down(t->root, path, &id, 1U << (deep - 1), 0, anodes);
+
+	return path;
+}
+void down(trnode *node, uint32_t *path, uint32_t *id, uint32_t mask, uint32_t val, trnode **anodes)
+{
+    	if (node->block)
+    	{
+        	path[*id] = val;
+        	anodes[*id] = node;
+        	(*id)++;
+   	}
+
+  	if (node->left)
+    	{
+        	down(node->left, path, id, mask >> 1, val, anodes);
+	}
+	
+	if (node->right)
+    	{
+        	down(node->right, path, id, mask >> 1, val | mask, anodes);
+    	}
+}

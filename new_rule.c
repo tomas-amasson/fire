@@ -11,9 +11,9 @@
 
 #define SOCKPATH "rules.sock"
 
-#define IN 	0
-#define OUT 	1
-#define BOTH	2
+#define IN 	1
+#define OUT 	2
+#define BOTH	3
 
 typedef struct rules{
 	uint8_t op;
@@ -69,18 +69,31 @@ int32_t main(int argc, char *argv[])
 	}
 
 	// IP
+	if (strlen(block) > 19)
+	{
+		printf("IP must be 19 chars or lower.\n");
+		return 1;
+	}	
+
+
 	if (!strcmp(type, "ip") || !strcmp(type, "IP"))
 	{
-		uint8_t i = 3;
+		char *limit = (char *) malloc(sizeof(char) * 19); // IP maximum lenght
+		memcpy(limit, block, strlen(block));
+
+		limit = strtok(limit, "/");
+
+		info.lim = atoi(strtok(NULL, "/"));
 		block = strtok(block, ".");
 		info.data |= atoi(block) << 24;
 
-		for (; i && block; i--)
+		for (uint8_t i = 3; i && block; i--)
 		{
 			block = strtok(NULL, ".");
 			info.data |= atoi(block) << ((i - 1) * 8);
 		}
-		info.lim  = (3 - i) * 8;
+
+		free(limit);
 	}
 	else if (!strcmp(type, "port") || !strcmp(type, "PORT"))
 	{

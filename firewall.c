@@ -37,14 +37,15 @@
 #define MEMERR		1
 #define SYSERR		2
 
-
-#define CORRUPT		3
+#define INVALID		3
 #define FRAGMENT	2
+#define CORRUPT		1
+#define ACCEPTED	0
 
 #define NTHREADS	5
 #define THREADRL	1
 #define THREADPK	NTHREADS - THREADRL
-
+#define RULETYPE	2
 
 typedef struct rules{
 	uint8_t op;
@@ -58,9 +59,9 @@ uint32_t set_TUN();
 void load_stateless();
 uint32_t setup_socket();
 uint32_t setup_exit();
-void save_rules(rules **newr, uint32_t size);
+void save_rules();
 
-uint8_t  validate_package_thread(uint8_t *payload, void **pack);
+uint8_t  validate_package_thread(uint8_t *payload);
 void * start_worker(void *arg);
 void * start_worker_rule(void *arg);
 
@@ -68,9 +69,8 @@ void * start_worker_rule(void *arg);
 uint8_t check_stateless(void *pack, uint8_t protocol);
 
 void tcp_package_loss();
-void udp_package_loss();
 void package_denied();
-void send_ahead(void *pack);
+void send_ahead(ip *pack);
 
 void see_package(uint8_t *msg);
 void decode(udp *pack);
@@ -95,8 +95,6 @@ hash *fr_hash 	= NULL;
 /* RULES */
 trtree * port_rules 	= NULL;
 trtree * ip_rules	= NULL;
-rules **new_rules	= NULL;
-uint32_t rules_sz	= 0;
 
 uint8_t end;
 
@@ -152,10 +150,6 @@ int main(int argc, char *argv[])
 	// Load Rules 
 	port_rules 	= trtree_init();
 	ip_rules	= trtree_init();
-
-	new_rules	= (rules **) malloc(sizeof(struct rules *));
-	memset(new_rules, 0, sizeof(struct rules *));
-
 	load_stateless();
 
 	uint32_t sockfd = setup_socket();
@@ -297,12 +291,7 @@ int main(int argc, char *argv[])
 	}
 	
 	// Save applied rules
-	save_rules(new_rules, rules_sz);
-	for (uint32_t i = 0; i < rules_sz; i++)
-	{
-		free(new_rules[i]);
-	}
-	free(new_rules);
+	save_rules();
 
 	// Cleanup
 	free_queue(tr_queue);
@@ -385,35 +374,23 @@ void *start_worker_rule(void *arg)
 		printf("lim: %hhd, ways: %hhd, data: %d\n", nr->lim, nr->ways, nr->data); // DEBUG
 
 		// Action
-		if (copy[0])
+		if (nr->op)
 		{
 			if (!nr->lim)
 			{
-				tr_remove(port_rules, nr->data, 16);
+				tr_remove(port_rules, nr->data, 16, nr->ways, 16);
 			}
 			else
 			{
-				tr_remove(ip_rules, nr->data, 32);
+				tr_remove(ip_rules, nr->data, nr->lim, nr->ways, 32);
 			}
 		}
 		else
 		{
-			// Prevents data corruption
-			rules *newr = (rules *) malloc(sizeof(struct rules)); 
-			memcpy(newr, nr, sizeof(struct rules));
 
-			new_rules[rules_sz] = newr;
-			rules_sz++;
-			new_rules = (rules **) realloc(new_rules, sizeof(struct rules *) * (rules_sz + 1));
-			if (!new_rules)
-			{
-				printf("Unable to realloc.\n");
-				continue;
-			}
-				
 			if (!nr->lim)
 			{
-				if (tr_insert(port_rules, nr->data, 16, nr->ways))
+				if (tr_insert(port_rules, nr->data, 16, nr->ways, 16))
 				{
 					printf("RULE ADD FAILED.\n");
 					continue ;
@@ -425,14 +402,14 @@ void *start_worker_rule(void *arg)
 			}
 			else
 			{
-				if (tr_insert(ip_rules, nr->data, nr->lim, nr->ways))
+				if (tr_insert(ip_rules, nr->data, nr->lim, nr->ways, 32))
 				{
 					printf("RULE ADD FAILED.\n");
 					continue ;
 				}
 				else
 				{
-					printf("NEW IP RULE: %hhd.%hhd.%hhd.%hhd/%hd\n", nr->data >> 24, nr->data >> 16, nr->data >> 8, nr->data, nr->lim);
+					printf("NEW IP RULE: %hhd.%hhd.%hhd.%hhd/%hd (%b)\n", nr->data >> 24, nr->data >> 16, nr->data >> 8, nr->data, nr->lim, nr->data);
 				}
 			}
 		}
@@ -447,7 +424,6 @@ void *start_worker(void *arg)
 	queue *q = arg;
 	uint8_t *copy = (uint8_t *) calloc(MTU, sizeof(uint8_t));
 	uint8_t ret = 0;
-	void *pack = NULL;
 
 	while (!end)
 	{
@@ -475,35 +451,20 @@ void *start_worker(void *arg)
 		memcpy(copy, package, MTU); // Prevenir corrupção (caso o input seja muito maior que o output)
 		pthread_mutex_unlock(&q_write);
 
-		ret = validate_package_thread(copy, &pack);
-		if (ret == 0)
+		ret = validate_package_thread(copy);
+		if (ret == ACCEPTED)
 		{
-			// Mais coisas
-			see_package(copy); // DEBUG
-	
-
-			if (check_stateless(pack, 17))
-			{
-				printf("PACKAGE DENIED.\n");
-				package_denied();
-			}
-			else
-			{
-				printf("PACKAGE ACCEPTED.\n");
-				send_ahead((void *)pack);
-			}
-
-			free(pack);
-			continue ;
+			printf("PACKAGE ACCEPTED.\n");
 		}
-		else if (ret == 1)
+		else if (ret == INVALID)
 		{
-			printf("Package Protocol not supported.\n");
-			free(pack);
+			printf("INVALID PROTOCOL.\n");
 		}
-		else if (ret == 3)
+		else if (ret == CORRUPT)
 		{
 			printf("PACKAGE DENIED.\n");
+			// package_denied();
+			// tcp_close_connection();
 		}	
 	}
 
@@ -515,26 +476,34 @@ void *start_worker(void *arg)
 
 
 /* Thread Funcion */
-uint8_t validate_package_thread(uint8_t *payload, void **pack)
+uint8_t validate_package_thread(uint8_t *payload)
 {
 
 	uint8_t last = 0;
-	uint8_t ret = 1;
+	uint8_t ret;
 	hashnode *target;
 
 	ip *ipp = ip_init(payload);
 	uint8_t *package_start = payload + (ipp->ihl * 4);
+	void *pack; // Package behind IP protocol
+	uint32_t realsz = ipp->tot_lenght - (ipp->ihl * 4);
 
-
+	// IP validation
 	if (ipp->type == 4)
 	{
-
 		if (ipv4_check(payload) || check_stateless((void *) ipp, 0))
 		{
 			free(ipp);
 			return CORRUPT;
 		}
 	}
+	else
+	{
+		free(ipp);
+		return INVALID;
+	}
+
+
 
 	// Houve fragmentação
 	if (ipp->MF || ipp->offset > 0)
@@ -554,57 +523,59 @@ uint8_t validate_package_thread(uint8_t *payload, void **pack)
 		
 		pthread_mutex_unlock(&hash_rw);
 
-		// Caso não seja o último fragmento larga a mão
-		if (!last)
+		// Missing at least one package
+		if (last)
+		{
+			package_start = hash_obtain_package(target);
+			realsz = target->expected;
+		}
+		else
 		{
 			free(ipp);
-			printf("FRAGMENT\n"); //DEBUG
 			return FRAGMENT;
 		}
 	}
 	
-	if (last)
-	{
-		// Desfragmentar
-		package_start = hash_obtain_package(target);
-
-	}
-
-	// Validar Protocolo
-
+	// Package Protocol Validation
 	if (ipp->protocol == 17) /* UDP */
 	{
-		*pack = set_udp(package_start);
-		if (!*pack)
+		pack = (udp *) set_udp(package_start);
+		if (!pack)
 		{
+			free(ipp);
+			free(package_start);
 			return CORRUPT;
 		}
 
-		ret = udp_check(*pack, ipp->from, ipp->to);
-		//decode(*pack); // DEBUG
+		ret = udp_check(pack, ipp->from, ipp->to, realsz);
 	}
-	else if (ipp->protocol == 6)
+	else if (ipp->protocol == 6) /* TCP */
 	{
-		tcp *pack;
+		pack = (tcp *) set_tcp(package_start);
+		if (!pack)
+		{
+			free(ipp);
+			free(package_start);
+			return CORRUPT;
+		}
+
 		ret = tcp_check(pack);
 	}
 
-	if (ret == 1)
+	// Stateless Rules Check
+	if (check_stateless(pack, ipp->protocol))
 	{
-		printf("HERE\n");
-		printf("%d - %d: %d", ipp->from, ipp->to, ipp->protocol);
-		see_package((uint8_t *) ipp);
+		free(ipp);
+		udp_free(pack);
+		free(package_start);
+		return CORRUPT;
 	}
+	//decode(*pack); // DEBUG
 
 	free(ipp);
+	udp_free(pack);
 	free(package_start);
-
 	return ret;	
-}
-
-void udp_package_loss()
-{
-	return ;
 }
 
 void tcp_package_loss()
@@ -644,6 +615,8 @@ uint8_t check_stateless(void *pack, uint8_t protocol)
 	if (!protocol)
 	{
 		ip *spec = (ip *) pack;
+
+		printf("%b -> %b\n", spec->from, spec->to);
 		tree = ip_rules;
 		return blocked(tree, spec->to, 32, IN) || blocked(tree, spec->from, 32, OUT);
 	}
@@ -657,8 +630,7 @@ uint8_t check_stateless(void *pack, uint8_t protocol)
 	else if (protocol == 17)
 	{
 		udp *spec = (udp *) pack;
-		printf("PORT: %hd\n", spec->header->destin); // DEBUG
-		return blocked(tree, spec->header->destin, 32, IN) || blocked(tree, spec->header->source, 32, OUT);
+		return blocked(tree, spec->header->destin, 16, IN) || blocked(tree, spec->header->source, 16, OUT);
 	}
 
 	return 1;
@@ -667,6 +639,8 @@ uint8_t check_stateless(void *pack, uint8_t protocol)
 
 void load_stateless()
 {
+	uint8_t ret;
+
 	uint32_t fd = open(STATELESS, O_RDONLY);
 	if (fd == -1)
 	{
@@ -677,14 +651,25 @@ void load_stateless()
 	rules fdata;
 	while (read(fd, &fdata, sizeof(struct rules)))
 	{
+		if (fdata.op)
+		{
+			printf("%d - %b not blocked\n", fdata.data, fdata.data);
+			continue;
+		}
 
+		printf("%d - %b : %hhd -> %hd added\n", fdata.data, fdata.data, fdata.ways, fdata.lim);
 		if (!fdata.lim)
 		{
-			tr_insert(port_rules, fdata.data, 16, fdata.ways);
+			ret = tr_insert(port_rules, fdata.data, 16, fdata.ways, 16);
 		}
 		else
 		{
-			tr_insert(ip_rules, fdata.data, fdata.lim + 8, fdata.ways);
+			ret = tr_insert(ip_rules, fdata.data, fdata.lim, fdata.ways, 32);
+		}
+
+		if (ret)
+		{
+			printf("Error while inserting new rule.\n");
 		}
 	}
 	close(fd);
@@ -746,16 +731,63 @@ void decode(udp *pack)
 	fflush(0);
 }
 
-void save_rules(rules **newr, uint32_t size)
+void save_rules()
 {
-	uint32_t rulesfd = open(STATELESS, O_WRONLY | O_APPEND);
-	for (uint32_t i = 0; i < size; i++)
-	{	
-		if (write(rulesfd, (void *)(*newr), sizeof(struct rules)) == -1)
+	uint32_t rulesfd = open(STATELESS, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+	trtree *ptr;
+	rules buf;
+
+	uint32_t size = ((port_rules->size > ip_rules->size) ? port_rules->size : ip_rules->size);
+
+	// Port Rules
+
+	trnode ** anodes = (trnode **) malloc(sizeof(trnode *) * size);
+	uint8_t deep;
+
+	for (uint8_t l = 0; l < RULETYPE; l++)
+	{
+		switch(l)
 		{
-			printf("Rules couldn't be saved.\n");
+			case 0:
+				deep = 16;
+				ptr = port_rules;
+				break;
+			case 1:
+				deep = 32;
+				ptr = ip_rules;
+				break;
 		}
+
+
+		uint32_t *rulesl = get_nodes(ptr, anodes, deep);
+
+		for (uint32_t i = 0; i < ptr->size; i++)
+		{	
+			if (!rulesl[i] && !anodes[i])
+			{
+				continue;
+			}
+
+			buf.op	 = 0;
+			buf.lim	 = l? anodes[i]->deep: 0;
+			buf.ways = anodes[i]->ways;
+			buf.data = rulesl[i];
+
+			if (write(rulesfd, &buf, sizeof(struct rules)) == -1)
+			{
+				printf("Rules couldn't be saved.\n");
+			}
+			else
+			{
+				printf("Rule: %d:%hhd -> %hd saved\n", buf.data, buf.op, buf.lim); // DEBUG
+			}
+		}
+
+		free(rulesl);
 	}
+
+	free(anodes);
 	close(rulesfd);
 
 	return ;
@@ -780,7 +812,17 @@ uint32_t setup_exit() // PARA INTERIOR SÓ ESCREVER EM TUNFD
 	return exitfd;
 }
 
-void send_ahead(void *pack)
+void send_ahead(ip *pack)
 {
+	
+	if (pack->to & 0xA000000) // Mesmo ip da máquina = enviado para uma port
+	{
+				
+	}
+
+	else // Ip de fora, deve ser enviado para outra máquina
+	{
+	}
+	
 	return ;
 }

@@ -1,6 +1,7 @@
 #ifndef HASH_H
 #define HASH_H
 
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -22,7 +23,8 @@ typedef struct hashnode{
 	struct hashnode * next;
 	
 	uint16_t id;
-	uint16_t miss;
+	uint16_t expected;
+	uint16_t received;
 	uint16_t source;
 	uint16_t destin;
 	uint8_t	 protocol;

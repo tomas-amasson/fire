@@ -1,4 +1,3 @@
-#include <stdlib.h>
 #include "hash.h"
 
 hashnode *hashn_init(uint16_t id, uint16_t source, uint16_t destin, uint8_t protocol)
@@ -9,7 +8,8 @@ hashnode *hashn_init(uint16_t id, uint16_t source, uint16_t destin, uint8_t prot
 	ret->source 	= source;
 	ret->destin 	= destin;
 	ret->protocol 	= protocol;
-	ret->miss	= 0;
+	ret->expected	= 0;
+	ret->received	= 0;
 
 	ret->box 	= NULL;
 	ret->next 	= NULL;
@@ -32,11 +32,13 @@ void free_hashn(hashnode *hn)
 
 	while (forward != NULL)
 	{
+		free(current->data);
 		free(current);
 
 		current = forward;
 		forward = current->forward;
 	}
+	free(current->data);
 	free(current);
 
 	free(hn);
@@ -143,7 +145,10 @@ fragment * frag_init(uint16_t offset, uint8_t *data, uint8_t MF, uint16_t size)
 	ret->forward 	= NULL;
 	ret->backward 	= NULL;
 
-	ret->data 	= data;
+
+	ret->data 	= malloc(size);
+	memcpy(ret->data, data, size);
+
 	ret->offset 	= offset;
 	ret->MF		= MF;
 	ret->psize	= size;
@@ -154,11 +159,11 @@ fragment * frag_init(uint16_t offset, uint8_t *data, uint8_t MF, uint16_t size)
 
 uint8_t add_frag(hashnode * hn, fragment *fr)
 {	
-	hn->miss += fr->psize;
+	hn->received += fr->psize;
 
 	if (!fr->MF)
 	{
-		hn->miss = missing((fr->offset * 8) + fr->psize, hn->miss);
+		hn->expected = missing((fr->offset * 8) + fr->psize, hn->expected);
 	}
 
 	if (hn->box == NULL)
@@ -171,12 +176,14 @@ uint8_t add_frag(hashnode * hn, fragment *fr)
 	fragment *tracker = hn->box;
 	uint16_t current = hn->box->offset;
 
+	// Find fragment position on the list
 	while (tracker->forward != NULL && fr->offset > current)
 	{
 		tracker = tracker->forward;
 		current = tracker->offset;
 	}
 
+	// Fragment must be before an existing one
 	if (fr->offset < current)
 	{
 		fr->forward = tracker;
@@ -186,10 +193,14 @@ uint8_t add_frag(hashnode * hn, fragment *fr)
 		{
 			tracker->backward->forward = fr;
 		}
+		else
+		{
+			hn->box = fr;
+		}
 
 		tracker->backward = fr;
 	}
-
+	// Fragment must be after an existing one
 	else
 	{
 		fr->forward 	= tracker->forward;
@@ -203,7 +214,7 @@ uint8_t add_frag(hashnode * hn, fragment *fr)
 		tracker->forward = fr;
 	}
 
-	return hn->miss? 0: 1;
+	return (hn->expected > 0 && hn->received == hn->expected);
 }
 
 
