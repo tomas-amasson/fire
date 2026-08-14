@@ -1,6 +1,6 @@
 #include "hash.h"
 
-hashnode *hashn_init(uint16_t id, uint16_t source, uint16_t destin, uint8_t protocol)
+hashnode *hashn_init(uint16_t id, uint16_t source, uint16_t destin, uint16_t portin, uint16_t portout, uint8_t protocol, uint8_t tw_stage)
 {
 	hashnode *ret = (hashnode *) malloc(sizeof(hashnode));
 
@@ -8,6 +8,9 @@ hashnode *hashn_init(uint16_t id, uint16_t source, uint16_t destin, uint8_t prot
 	ret->source 	= source;
 	ret->destin 	= destin;
 	ret->protocol 	= protocol;
+	ret->tw_stage 	= tw_stage;
+	ret->portin	= portin;
+	ret->portout 	= portout;
 	ret->expected	= 0;
 	ret->received	= 0;
 
@@ -32,12 +35,14 @@ void free_hashn(hashnode *hn)
 
 	while (forward != NULL)
 	{
+		free(current->all);
 		free(current->data);
 		free(current);
 
 		current = forward;
 		forward = current->forward;
 	}
+	free(current->all);
 	free(current->data);
 	free(current);
 
@@ -138,7 +143,7 @@ void pop_hashn(hash *h, hashnode *hn)
 }
 
 
-fragment * frag_init(uint16_t offset, uint8_t *data, uint8_t MF, uint16_t size)
+fragment * frag_init(uint16_t offset, uint8_t *data, uint8_t MF, uint32_t acknum, uint32_t seqnum, uint16_t size, uint8_t *all)
 {
 	fragment *ret = (fragment *) malloc(sizeof(fragment));
 
@@ -146,11 +151,14 @@ fragment * frag_init(uint16_t offset, uint8_t *data, uint8_t MF, uint16_t size)
 	ret->backward 	= NULL;
 
 
-	ret->data 	= malloc(size);
+	ret->data 	= (uint8_t *) malloc(size);
+	ret->all	= (uint8_t *) malloc(size + 20); // IP header size
 	memcpy(ret->data, data, size);
+	memcpy(ret->all, all, size + 20);
 
 	ret->offset 	= offset;
 	ret->MF		= MF;
+	ret->acknum	= acknum;
 	ret->psize	= size;
 
 	return ret;
@@ -218,13 +226,13 @@ uint8_t add_frag(hashnode * hn, fragment *fr)
 }
 
 
-hashnode *search_hn(hash *h, uint16_t id, uint16_t source, uint16_t destin, uint8_t protocol)
+hashnode *search_hn(hash *h, uint16_t id, uint16_t source, uint16_t destin, uint16_t portin, uint16_t portout, uint8_t protocol)
 {
 	hashnode *tracker = h->array[id]; 
 	
 	while (tracker != NULL)
 	{
-		if (source == tracker->source && destin == tracker->destin && protocol == tracker->protocol)
+		if ((source == tracker->source) && (destin == tracker->destin) && (protocol == tracker->protocol) && (tracker->portin == portin) && (tracker->portout == portout))
 		{
 			return tracker;
 		}

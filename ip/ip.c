@@ -37,6 +37,9 @@ uint8_t from16to8(uint16_t a)
 
 uint16_t from8to16(uint8_t a, uint8_t b)
 {
+	// AA e BB
+	// AABB
+
         uint16_t ret = ((uint16_t) a << 8) | b;
         return ret;
 }
@@ -59,6 +62,9 @@ void fill8from32(uint8_t *arr, uint32_t b)
 
 void fill8from16(uint8_t *arr, uint16_t b)
 {
+	// AA BB initial
+	// AA BB
+
 	arr[0] = (uint8_t)(b >> 8);
 	arr[1] = (uint8_t) b;
 
@@ -85,4 +91,101 @@ uint8_t ipv4_check(uint8_t *payload)
 
 	sum = ~(sum) & 0xFFFF;
 	return (!sum) ? 0: 1;
+}
+
+uint32_t sum16from32(uint32_t a)
+{
+	return (a >> 16 & 0xffff) + (a & 0xffff);
+}
+
+uint32_t sum16from8(uint8_t a, uint8_t b)
+{
+	return  (((uint16_t) a) << 8) + b;
+}
+
+
+void free_protocol(struct package *a)
+{
+	free(a->header);
+	free(a);
+
+	return ;
+}
+
+uint32_t endianness32(uint32_t a)
+{
+	uint32_t ret = 0;
+	
+	// AA BB CC DD
+	// DD CC BB AA
+
+	
+	ret = ((a & 0xFF) << 24) | ((a & 0xFF00) << 8) | ((a & 0xFF0000) >> 8) | ((a & 0xFF000000) >> 24);
+
+	return ret;
+}
+
+uint16_t endianness16(uint16_t a)
+{
+
+	uint16_t ret = 0;
+
+	ret = ((a & 0xff00) >> 8) | ((a & 0xff) << 8);
+
+	return ret;
+}
+
+uint8_t * make_package(uint8_t *end, ip *info, void * pack, uint16_t sz)
+{	
+	if (sz > 1500)
+	{
+		return 0;
+	}
+
+	uint16_t mempos = 0;
+
+	if (info)
+	{	
+		memcpy(end, info, 20); // IP fixed size, no conf
+		sz -= 20;
+		mempos += 20;
+	}	
+
+	if (pack)
+	{
+		memcpy((end + mempos), pack, sz);
+	}
+
+	return end;
+}
+
+
+uint16_t checksum(uint8_t *data, uint16_t lenght, uint32_t start)
+{
+	uint8_t odd = 0;
+		
+	// Number of bytes is Odd
+	if (lenght & 0x1)
+	{
+		odd = 1;
+		start += sum16from8(data[lenght - 1], 0x00);
+	}
+	
+	// Package + Message
+	for (uint32_t i = 0; i < (lenght - odd); i = i + 2)
+	{
+		start += sum16from8(data[i], data[i + 1]);
+	}	
+
+	// Overflow
+	uint16_t add = (uint16_t) (start >> 16);
+	while (add)
+	{
+		start &= 0xffff;
+		start += add;
+		add =  (uint16_t) (start >> 16);
+	}
+
+	return (~(start & 0xFFFF));
+
 }

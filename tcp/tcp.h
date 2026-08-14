@@ -3,8 +3,16 @@
 
 #pragma pack(1)
 
+#define FIN	0x01
+#define SYN	0x02
+#define ACK	0x10
+
+
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "../ip/ip.h"
 
 typedef struct {
@@ -22,14 +30,16 @@ typedef struct {
 } tcphdr;
 
 typedef struct {
+	uint8_t protocol;
 	tcphdr *header;	
 	uint8_t *msg;
 } tcp;
 
 tcp * set_tcp(uint8_t *payload);
-uint8_t tcp_check(tcp *pack);
-void tcp_connect(tcp *pack);
+uint16_t tcp_check(tcp *pack, ip *info);
+uint16_t tcp_checksum(uint8_t * msg, uint16_t lenght);
+uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *rinfo);
 void tcp_free(tcp *pack);
-
+uint32_t unix_random();
 
 #endif

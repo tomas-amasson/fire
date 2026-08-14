@@ -5,12 +5,20 @@
 #include <stdint.h>
 #include <string.h>
 
-#pragma pack(1)
+#pragma pack(1)	
 
 typedef struct fragment{
+	/* UDP */
 	uint16_t offset;
-	uint8_t  *data;
 	uint8_t  MF;
+
+	/* TCP */
+	uint32_t acknum;
+	uint32_t seqnum;
+
+	/* BOTH */
+	uint8_t  *data;
+	uint8_t  *all;
 	uint16_t psize;
 
 	struct fragment * forward;
@@ -22,11 +30,19 @@ typedef struct hashnode{
 
 	struct hashnode * next;
 	
+	/* UDP */
 	uint16_t id;
 	uint16_t expected;
 	uint16_t received;
+
+	/* TCP */
+	uint8_t  tw_stage; /* 1- SYN, 2- ACK, 3- FIN */
+
+	/* BOTH */
 	uint16_t source;
 	uint16_t destin;
+	uint16_t portin;
+	uint16_t portout;
 	uint8_t	 protocol;
 
 	fragment * box;
@@ -39,7 +55,7 @@ typedef struct {
 } hash;
 
 
-hashnode *hashn_init(uint16_t id, uint16_t source, uint16_t destin, uint8_t protocol);
+hashnode *hashn_init(uint16_t id, uint16_t source, uint16_t destin, uint16_t portin, uint16_t portout, uint8_t protocol, uint8_t tw_stage);
 void 	free_hashn(hashnode *hn);
 hash 	*hash_init(uint32_t max);
 void 	go_down(hashnode *hn);
@@ -50,9 +66,9 @@ uint8_t* hash_obtain_package(hashnode *hn);
 
 uint16_t missing(uint16_t lenght, uint16_t miss);
 
-hashnode *search_hn(hash *h, uint16_t id, uint16_t source, uint16_t destin, uint8_t protocol);
+hashnode *search_hn(hash *h, uint16_t id, uint16_t source, uint16_t destin, uint16_t portin, uint16_t portout, uint8_t protocol);
 
-fragment * frag_init(uint16_t offset, uint8_t *data, uint8_t MF, uint16_t size);
+fragment * frag_init(uint16_t offset, uint8_t *data, uint8_t MF, uint32_t acknum, uint32_t seqnum, uint16_t size, uint8_t *all);
 uint8_t add_frag(hashnode * hn, fragment *fr);
 
 

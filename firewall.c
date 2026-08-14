@@ -70,7 +70,7 @@ uint8_t check_stateless(void *pack, uint8_t protocol);
 
 void tcp_package_loss();
 void package_denied();
-void send_ahead(ip *pack);
+void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_in *addr);
 
 void see_package(uint8_t *msg);
 void decode(udp *pack);
@@ -96,6 +96,8 @@ hash *fr_hash 	= NULL;
 trtree * port_rules 	= NULL;
 trtree * ip_rules	= NULL;
 
+uint32_t tunfd;
+uint32_t exitfd;
 uint8_t end;
 
 
@@ -103,7 +105,6 @@ int main(int argc, char *argv[])
 {
 	uint32_t ret;
 	uint8_t  err;
-	
 	
 	//Package Volume Control
 	end = 0;
@@ -159,9 +160,11 @@ int main(int argc, char *argv[])
 		return SYSERR;
 	}
 
+	// SEND
+	exitfd = setup_exit();
 
 	// RECEIVE
-	uint32_t tunfd = set_TUN();
+	tunfd = set_TUN();
 	if (tunfd < 0)
 	{
 		printf("System error: TUN create\n");
@@ -303,6 +306,7 @@ int main(int argc, char *argv[])
 	tr_free(port_rules->root);
 	free(port_rules);
 
+	close(exitfd);
 	close(epollfd);
 	close(tunfd);
 	close(sockfd);
@@ -479,14 +483,18 @@ void *start_worker(void *arg)
 uint8_t validate_package_thread(uint8_t *payload)
 {
 
-	uint8_t last = 0;
-	uint8_t ret;
+	uint8_t last = 0, frag = 0, ret = ACCEPTED;
+
 	hashnode *target;
+	fragment *fr;
+	void *pack; // Package behind IP protocol
 
 	ip *ipp = ip_init(payload);
 	uint8_t *package_start = payload + (ipp->ihl * 4);
-	void *pack; // Package behind IP protocol
 	uint32_t realsz = ipp->tot_lenght - (ipp->ihl * 4);
+
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
 
 	// IP validation
 	if (ipp->type == 4)
@@ -504,21 +512,20 @@ uint8_t validate_package_thread(uint8_t *payload)
 	}
 
 
-
 	// Houve fragmentação
 	if (ipp->MF || ipp->offset > 0)
 	{
 		pthread_mutex_lock(&hash_rw);
-		target = search_hn(fr_hash, ipp->id, ipp->from, ipp->to, ipp->protocol);
-		
+		target = search_hn(fr_hash, ipp->id, ipp->from, ipp->to, 0, 0, ipp->protocol);
+	
 		if (target == NULL)
 		{
-			target = hashn_init(ipp->id, ipp->from, ipp->to, ipp->protocol);
+			target = hashn_init(ipp->id, ipp->from, ipp->to, 0, 0, ipp->protocol, 0);
 			add_hashn(fr_hash, target);
 
 		}
 
-		fragment *fr = frag_init(ipp->offset, package_start, (uint8_t) ipp->MF, ipp->tot_lenght - (ipp->ihl * 4));
+		fr = frag_init(ipp->offset, package_start, (uint8_t) ipp->MF, 0, 0, ipp->tot_lenght - (ipp->ihl * 4), payload);
 		last = add_frag(target, fr);
 		
 		pthread_mutex_unlock(&hash_rw);
@@ -527,6 +534,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 		if (last)
 		{
 			package_start = hash_obtain_package(target);
+			frag = 1;
 			realsz = target->expected;
 		}
 		else
@@ -543,11 +551,23 @@ uint8_t validate_package_thread(uint8_t *payload)
 		if (!pack)
 		{
 			free(ipp);
-			free(package_start);
 			return CORRUPT;
 		}
 
-		ret = udp_check(pack, ipp->from, ipp->to, realsz);
+		if (udp_check(pack, ipp->from, ipp->to, realsz))
+		{
+			free(ipp);
+			udp_free(pack);
+
+			return CORRUPT;
+		}
+		udp *upack = (udp *) pack;
+		
+		in_port_t port = upack->header->destin;
+		addr.sin_addr.s_addr = ipp->to;
+
+		addr.sin_port = port;
+		
 	}
 	else if (ipp->protocol == 6) /* TCP */
 	{
@@ -555,26 +575,82 @@ uint8_t validate_package_thread(uint8_t *payload)
 		if (!pack)
 		{
 			free(ipp);
-			free(package_start);
 			return CORRUPT;
 		}
 
-		ret = tcp_check(pack);
+		if (tcp_check(pack, ipp))
+		{
+			free(ipp);
+			tcp_free(pack);
+			return CORRUPT;
+		}
+
+		tcp * tpack = (tcp *)pack;
+		printf("SYN: %hhd\n", tpack->header->flags & 0x2);
+
+		pthread_mutex_lock(&hash_rw);
+
+		target = search_hn(fr_hash, ipp->id, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol);
+
+		if (!target)
+		{
+			target = hashn_init(0, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol, 0);
+			fr = frag_init(0, package_start, 0, tpack->header->acknum, tpack->header->seqnum, ipp->tot_lenght - ipp->ihl, payload); // Save the first TCP header
+		}
+
+
+		pthread_mutex_unlock(&hash_rw);
+
+		if (tcp_connect(tpack, &target->tw_stage, tpack->header->acknum, ipp))
+		{
+			return CORRUPT;
+		}
+
+		// Send SYN/ACK Message
+		in_port_t port = tpack->header->destin;
+		addr.sin_addr.s_addr 	= ipp->from;
+		addr.sin_port		= port; 
+		ipp->to = ipp->from;
+
+
+		make_package(payload, ipp, (void *)tpack, ipp->tot_lenght);
+
+		free(tpack->header->options);	// After Connection
+	}
+	else
+	{
+		free(ipp);
+		return INVALID;
 	}
 
 	// Stateless Rules Check
 	if (check_stateless(pack, ipp->protocol))
 	{
 		free(ipp);
-		udp_free(pack);
-		free(package_start);
+		free_protocol((struct package *) pack);
 		return CORRUPT;
 	}
 	//decode(*pack); // DEBUG
+	if (frag)
+	{
+		fragment *tracker = target->box;
+		while (tracker)
+		{
+			ip *temp = ip_init(tracker->all);	
+			send_ahead(tracker->all, temp->to, temp->tot_lenght, &addr);
+			tracker = tracker->forward;
+			free(temp);
+		}
 
+		free(package_start);
+	}
+	else
+	{
+		send_ahead(payload, ipp->to, ipp->tot_lenght, &addr);
+	}
+
+	free_protocol((struct package *) pack);
 	free(ipp);
-	udp_free(pack);
-	free(package_start);
 	return ret;	
 }
 
@@ -705,17 +781,6 @@ uint32_t setup_socket()
 }
 
 
-uint8_t write_statrules(rules fpack)
-{
-	uint32_t fd = open(STATELESS, O_APPEND);
-	if (fd == -1)
-	{
-		return 1;
-	}
-
-	return 0;
-}
-
 void package_denied()
 {
 	return ;
@@ -780,7 +845,8 @@ void save_rules()
 			}
 			else
 			{
-				printf("Rule: %d:%hhd -> %hd saved\n", buf.data, buf.op, buf.lim); // DEBUG
+				printf("Rule: %d:%hhd -> %hd saved\n", buf.data, buf.ways, buf.lim); // DEBUG
+
 			}
 		}
 
@@ -795,34 +861,43 @@ void save_rules()
 
 uint32_t setup_exit() // PARA INTERIOR SÓ ESCREVER EM TUNFD
 {
-	uint32_t exitfd = socket(AF_UNIX, SOCK_RAW, 0);
-	if (exitfd < 0)
+	uint32_t fd = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+	if (fd < 0)
 	{
 		return 0;
 	}
 	
-	struct sockaddr_un exaddr;
-
-	exaddr.sun_family = AF_UNIX;
-	
-	if (bind(exitfd, (struct sockaddr *) &exaddr, sizeof(exaddr)))
-	{
-	}
-	
-	return exitfd;
+	return fd;
 }
 
-void send_ahead(ip *pack)
+void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_in *addr)
 {
 	
-	if (pack->to & 0xA000000) // Mesmo ip da máquina = enviado para uma port
+	if (destin & 0xA000000) // Mesmo ip da máquina = enviado para uma port
 	{
-				
+		if (write(tunfd, (void *)pack, tsize) == -1)
+		{
+			printf("Error: %s\n", strerror(errno));
+		}
+		else
+		{
+			printf("Package sent sucessfully.\n");
+		}
 	}
 
 	else // Ip de fora, deve ser enviado para outra máquina
 	{
+		printf("packsize: %d\n", tsize);
+		if (sendto(exitfd, pack, tsize, 0, (struct sockaddr *) addr, sizeof(struct sockaddr_in)) == -1)
+		{
+			printf("Error: %s\n", strerror(errno));
+		}
+		else
+		{
+			printf("Package sent sucessfully.\n");
+		}
 	}
 	
 	return ;
 }
+

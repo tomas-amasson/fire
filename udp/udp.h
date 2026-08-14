@@ -14,6 +14,7 @@ typedef struct {
 } udphdr;
 
 typedef struct {
+	uint8_t protocol;
 	udphdr *header;	
 	uint8_t *msg;
 } udp;
