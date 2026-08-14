@@ -3,6 +3,9 @@
 
 #pragma pack(1)
 
+#define CONNECT 0
+#define RECEIVE 2
+
 #define FIN	0x01
 #define SYN	0x02
 #define ACK	0x10
@@ -36,9 +39,11 @@ typedef struct {
 } tcp;
 
 tcp * set_tcp(uint8_t *payload);
-uint16_t tcp_check(tcp *pack, ip *info);
+tcphdr * tcp_extract(uint8_t *payload);
+
+uint16_t tcp_check(tcp *pack, ip *info, uint16_t check);
 uint16_t tcp_checksum(uint8_t * msg, uint16_t lenght);
-uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *rinfo);
+uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *info);
 void tcp_free(tcp *pack);
 uint32_t unix_random();
 

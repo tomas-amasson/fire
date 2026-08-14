@@ -565,7 +565,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 		
 		in_port_t port = upack->header->destin;
 		addr.sin_addr.s_addr = ipp->to;
-
 		addr.sin_port = port;
 		
 	}
@@ -578,43 +577,62 @@ uint8_t validate_package_thread(uint8_t *payload)
 			return CORRUPT;
 		}
 
-		if (tcp_check(pack, ipp))
+		tcp * tpack = (tcp *)pack;
+		if (tcp_check(tpack, ipp, tpack->header->checksum))
 		{
 			free(ipp);
 			tcp_free(pack);
 			return CORRUPT;
 		}
 
-		tcp * tpack = (tcp *)pack;
-		printf("SYN: %hhd\n", tpack->header->flags & 0x2);
-
 		pthread_mutex_lock(&hash_rw);
-
-		target = search_hn(fr_hash, ipp->id, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol);
+		target = search_hn(fr_hash, tpack->header->destin, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol);
 
 		if (!target)
 		{
-			target = hashn_init(0, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol, 0);
+			// Destin PORT Used as ID
+			target = hashn_init(tpack->header->destin, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol, 0);
+			add_hashn(fr_hash, target);
+
 			fr = frag_init(0, package_start, 0, tpack->header->acknum, tpack->header->seqnum, ipp->tot_lenght - ipp->ihl, payload); // Save the first TCP header
-		}
-
-
+			add_frag(target, fr);
+		}	
 		pthread_mutex_unlock(&hash_rw);
 
-		if (tcp_connect(tpack, &target->tw_stage, tpack->header->acknum, ipp))
+		// Already sets ipp/tpack to the correct values
+		uint8_t state = tcp_connect(tpack, &target->tw_stage, target->box->acknum, ipp);
+
+		if (state == CORRUPT)
 		{
 			return CORRUPT;
 		}
 
 		// Send SYN/ACK Message
-		in_port_t port = tpack->header->destin;
-		addr.sin_addr.s_addr 	= ipp->from;
-		addr.sin_port		= port; 
-		ipp->to = ipp->from;
+		else if (state == CONNECT)
+		{
+			in_port_t port = tpack->header->source;
+			addr.sin_addr.s_addr 	= ipp->to;
+			addr.sin_port		= port; 
 
+			// Changes the payload ptr
+			ip *faked = ip_extract(payload);
+			
+			faked->from 	= ipp->from;
+			faked->to	= ipp->to;
+			faked->tot_lenght = ipp->tot_lenght;
+			faked->ihl	= ipp->ihl;
+			
+			tcphdr *tfaked = tcp_extract(package_start);
+			tfaked->flags  = tpack->header->flags;
+			tfaked->source = tpack->header->source;
+			tfaked->destin = tpack->header->destin;
+			tfaked->offset = tpack->header->offset;	
+			
+		}
 
-		make_package(payload, ipp, (void *)tpack, ipp->tot_lenght);
-
+		else if (state == RECEIVE)
+		{
+		}
 		free(tpack->header->options);	// After Connection
 	}
 	else

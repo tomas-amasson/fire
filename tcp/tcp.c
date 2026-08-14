@@ -36,7 +36,14 @@ tcp * set_tcp(uint8_t *payload)
 	return ret;
 }
 
-uint16_t tcp_check(tcp *pack, ip *info)
+tcphdr * tcp_extract(uint8_t *payload)
+{
+	tcphdr * ret = (void *)payload;
+
+	return ret;
+}
+
+uint16_t tcp_check(tcp *pack, ip *info, uint16_t check)
 {
 	tcphdr *header = pack->header;
 
@@ -64,7 +71,7 @@ uint16_t tcp_check(tcp *pack, ip *info)
 	fill8from32(pseudo + 8, header->acknum);
 	fill8from16(pseudo + 12, flags);
 	fill8from16(pseudo + 14, header->winsiz);
-	fill8from16(pseudo + 16, 0x0000); /* Checksum = 0x0000 */
+	fill8from16(pseudo + 16, check); 
 	fill8from16(pseudo + 18, header->urgptr);
 	
 	if (header->offset * 4 - 20 > 0)
@@ -72,11 +79,11 @@ uint16_t tcp_check(tcp *pack, ip *info)
 		memcpy(pseudo + 20, header->options, (header->offset * 4 - 20));
 		ptroff = header->offset * 4;
 	}
-	memcpy(pseudo + ptroff, pack->msg, sz - ptroff);
-
+	if (sz - ptroff > 0)
+	{
+		memcpy(pseudo + ptroff, pack->msg, sz - ptroff);
+	}
 	ret = checksum(pseudo, sz, ret);
-	
-	printf("check: %02x\n", ret & 0xffff);
 
 	free(pseudo);
 	return ret;
@@ -88,7 +95,7 @@ uint16_t tcp_checksum(uint8_t *msg, uint16_t lenght)
 }
 
 
-uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *rinfo)
+uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *info)
 {
 	uint8_t flags = pack->header->flags;
 	uint8_t stage = *tw_stage;
@@ -99,24 +106,30 @@ uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *rinfo)
 		if (!stage)
 		{
 			*tw_stage = SYN | ACK;
-
-			pack->header->seqnum++;
-
 			uint32_t rand = unix_random();
 			if (!rand)
 			{
 				return 1;
 			}
 
-			pack->header->acknum = endianness32(rand);
+			pack->header->seqnum = endianness32(rand);
+			pack->header->acknum++;
 
-			ip info;
-			info.from = rinfo->to;
-			info.to	  = rinfo->from;
-			info.ihl  = 5;
-			info.tot_lenght = 40;
 
-			pack->header->checksum = endianness16(tcp_check(pack, &info));
+			
+			uint32_t temp = info->from;
+			info->from = info->to;
+			info->to   = temp;
+			info->ihl   = 5;
+			info->tot_lenght = 40; // TCP: 20 bytes
+		
+			temp = pack->header->source;
+			pack->header->source = pack->header->destin;
+			pack->header->destin = temp;
+
+			pack->header->offset = 5;
+
+			pack->header->checksum = endianness16(tcp_check(pack, info, 0));
 
 			return 0;
 		}
@@ -125,7 +138,7 @@ uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *rinfo)
 		else if (pack->header->acknum == acknumber)
 		{
 			*tw_stage = 0;
-			return tcp_connect(pack, tw_stage, acknumber, rinfo);
+			return tcp_connect(pack, tw_stage, acknumber, info);
 		}
 		else
 		{

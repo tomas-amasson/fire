@@ -1,9 +1,7 @@
 #include "ip.h"
 
-ip* ip_init(uint8_t *payload)
+void ip_fill(ip *ret, uint8_t *payload)
 {
-	ip *ret 	= (ip *) malloc(sizeof(ip));
-
 	ret->type  	= (payload[0] & 0xF0) >> 4;
         ret->ihl   	= payload[0] & 0x0F;	
 	ret->tos	= payload[1];
@@ -25,7 +23,20 @@ ip* ip_init(uint8_t *payload)
 
 	ret->from  	= from16to32(from8to16(payload[12], payload[13]), from8to16(payload[14], payload[15]));
         ret->to	  	= from16to32(from8to16(payload[16], payload[17]), from8to16(payload[18], payload[19]));
+}
+
+ip* ip_init(uint8_t *payload)
+{
+	ip *ret = (ip *) malloc(sizeof(ip));
+	ip_fill(ret, payload);
 	
+	return ret;
+}
+
+ip* ip_extract(uint8_t *payload)
+{
+	ip *ret = (void *) payload;
+
 	return ret;
 }
 
@@ -134,31 +145,6 @@ uint16_t endianness16(uint16_t a)
 
 	return ret;
 }
-
-uint8_t * make_package(uint8_t *end, ip *info, void * pack, uint16_t sz)
-{	
-	if (sz > 1500)
-	{
-		return 0;
-	}
-
-	uint16_t mempos = 0;
-
-	if (info)
-	{	
-		memcpy(end, info, 20); // IP fixed size, no conf
-		sz -= 20;
-		mempos += 20;
-	}	
-
-	if (pack)
-	{
-		memcpy((end + mempos), pack, sz);
-	}
-
-	return end;
-}
-
 
 uint16_t checksum(uint8_t *data, uint16_t lenght, uint32_t start)
 {
