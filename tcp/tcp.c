@@ -95,7 +95,7 @@ uint16_t tcp_checksum(uint8_t *msg, uint16_t lenght)
 }
 
 
-uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *info)
+uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t seqnum, ip *info)
 {
 	uint8_t flags = pack->header->flags;
 	uint8_t stage = *tw_stage;
@@ -112,11 +112,11 @@ uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *info)
 				return 1;
 			}
 
-			pack->header->seqnum = endianness32(rand);
-			pack->header->acknum++;
+			pack->header->seqnum = rand;
+			pack->header->acknum = seqnum + 1;
 
-
-			
+			pack->header->winsiz = WINSIZE;
+				
 			uint32_t temp = info->from;
 			info->from = info->to;
 			info->to   = temp;
@@ -127,18 +127,19 @@ uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *info)
 			pack->header->source = pack->header->destin;
 			pack->header->destin = temp;
 
+			pack->header->flags = *tw_stage;
 			pack->header->offset = 5;
 
-			pack->header->checksum = endianness16(tcp_check(pack, info, 0));
+			pack->header->checksum = tcp_check(pack, info, 0);
 
 			return 0;
 		}
 
 		// Connection Failed, try again.
-		else if (pack->header->acknum == acknumber)
+		else if (pack->header->seqnum == seqnum)
 		{
 			*tw_stage = 0;
-			return tcp_connect(pack, tw_stage, acknumber, info);
+			return tcp_connect(pack, tw_stage, seqnum, info);
 		}
 		else
 		{

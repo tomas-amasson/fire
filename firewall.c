@@ -484,6 +484,8 @@ uint8_t validate_package_thread(uint8_t *payload)
 {
 
 	uint8_t last = 0, frag = 0, ret = ACCEPTED;
+	
+	see_package(payload);
 
 	hashnode *target;
 	fragment *fr;
@@ -594,13 +596,14 @@ uint8_t validate_package_thread(uint8_t *payload)
 			target = hashn_init(tpack->header->destin, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol, 0);
 			add_hashn(fr_hash, target);
 
+			printf("SEQ:%d\n", tpack->header->seqnum);
 			fr = frag_init(0, package_start, 0, tpack->header->acknum, tpack->header->seqnum, ipp->tot_lenght - ipp->ihl, payload); // Save the first TCP header
 			add_frag(target, fr);
 		}	
 		pthread_mutex_unlock(&hash_rw);
 
 		// Already sets ipp/tpack to the correct values
-		uint8_t state = tcp_connect(tpack, &target->tw_stage, target->box->acknum, ipp);
+		uint8_t state = tcp_connect(tpack, &target->tw_stage, target->box->seqnum, ipp);
 
 		if (state == CORRUPT)
 		{
@@ -617,16 +620,25 @@ uint8_t validate_package_thread(uint8_t *payload)
 			// Changes the payload ptr
 			ip *faked = ip_extract(payload);
 			
-			faked->from 	= ipp->from;
-			faked->to	= ipp->to;
-			faked->tot_lenght = ipp->tot_lenght;
+
+			// Big Endian
+			faked->from 	= endianness32(ipp->from);
+			faked->to	= endianness32(ipp->to);
+			faked->tot_lenght = endianness16(ipp->tot_lenght);
 			faked->ihl	= ipp->ihl;
+			faked->checksum = 0;
+			faked->checksum = endianness16(checksum(payload, 20, 0));
 			
 			tcphdr *tfaked = tcp_extract(package_start);
-			tfaked->flags  = tpack->header->flags;
-			tfaked->source = tpack->header->source;
-			tfaked->destin = tpack->header->destin;
-			tfaked->offset = tpack->header->offset;	
+			tfaked->flags  = 0x12; //2 & 5 -> little (0001 0010) >> big  (0010 0001 0000 0101)
+			tfaked->reserved = 0;
+			tfaked->source = endianness16(tpack->header->source);
+			tfaked->destin = endianness16(tpack->header->destin);
+			tfaked->offset = 0x5; // 4 bits	
+			tfaked->acknum = endianness32(tpack->header->acknum);
+			tfaked->seqnum = endianness32(tpack->header->seqnum);
+			tfaked->checksum = endianness16(tpack->header->checksum);
+			tfaked->winsiz = endianness16(tpack->header->winsiz);
 			
 		}
 
@@ -891,6 +903,7 @@ uint32_t setup_exit() // PARA INTERIOR SÓ ESCREVER EM TUNFD
 void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_in *addr)
 {
 	
+	see_package(pack);
 	if (destin & 0xA000000) // Mesmo ip da máquina = enviado para uma port
 	{
 		if (write(tunfd, (void *)pack, tsize) == -1)

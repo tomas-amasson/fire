@@ -146,6 +146,8 @@ uint16_t endianness16(uint16_t a)
 	return ret;
 }
 
+
+
 uint16_t checksum(uint8_t *data, uint16_t lenght, uint32_t start)
 {
 	uint8_t odd = 0;

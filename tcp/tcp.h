@@ -9,9 +9,8 @@
 #define FIN	0x01
 #define SYN	0x02
 #define ACK	0x10
+#define WINSIZE 0xffff
 
-
-#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <fcntl.h>
@@ -24,7 +23,7 @@ typedef struct {
 	uint32_t seqnum;
 	uint32_t acknum;
 
-	uint16_t offset : 4, reserved : 3, flags: 9;
+	uint16_t reserved : 4, offset : 4, flags: 8;
 	uint16_t winsiz;
 	uint16_t checksum;
 	uint16_t urgptr;
@@ -43,7 +42,7 @@ tcphdr * tcp_extract(uint8_t *payload);
 
 uint16_t tcp_check(tcp *pack, ip *info, uint16_t check);
 uint16_t tcp_checksum(uint8_t * msg, uint16_t lenght);
-uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t acknumber, ip *info);
+uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t seqnum, ip *info);
 void tcp_free(tcp *pack);
 uint32_t unix_random();
 
