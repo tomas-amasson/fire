@@ -27,6 +27,7 @@ void free_hashn(hashnode *hn)
 	fragment * current = hn->box;
 	if (current == NULL)
 	{
+		free(hn);
 		return ;
 	}
 		
@@ -171,7 +172,7 @@ uint8_t add_frag(hashnode * hn, fragment *fr)
 
 	if (!fr->MF)
 	{
-		hn->expected = missing((fr->offset * 8) + fr->psize, hn->expected);
+		hn->expected = missing(fr->offset + fr->psize, hn->expected);
 	}
 
 	if (hn->box == NULL)

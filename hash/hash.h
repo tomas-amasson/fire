@@ -37,6 +37,7 @@ typedef struct hashnode{
 
 	/* TCP */
 	uint8_t  tw_stage; /* 1- SYN, 2- ACK, 3- FIN */
+	uint8_t  options[255];
 
 	/* BOTH */
 	uint16_t source;

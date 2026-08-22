@@ -11,6 +11,10 @@
 
 #define SOCKPATH "rules.sock"
 
+#define ADD	0x0
+#define REM	0x1
+#define STR	0x2
+
 #define IN 	1
 #define OUT 	2
 #define BOTH	3
@@ -20,6 +24,7 @@ typedef struct rules{
 	uint8_t lim;
 	uint8_t ways;
 	uint32_t data;
+	void 	* alt;
 } rules;
 
 
@@ -69,21 +74,23 @@ int32_t main(int argc, char *argv[])
 	}
 
 	// IP
-	if (strlen(block) > 19)
-	{
-		printf("IP must be 19 chars or lower.\n");
-		return 1;
-	}	
 
 
 	if (!strcmp(type, "ip") || !strcmp(type, "IP"))
 	{
-		char *limit = (char *) malloc(sizeof(char) * 19); // IP maximum lenght
-		memcpy(limit, block, strlen(block));
+		if (strlen(block) > 19)
+		{
+			printf("IP must be 19 chars or lower.\n");
+			return 1;
+		}	
+		char *limit = (char *) malloc(sizeof(char) * 20); // IP maximum lenght + NULL char
+		memcpy(limit, block, strlen(block) + 1);
+
 
 		limit = strtok(limit, "/");
 
 		info.lim = atoi(strtok(NULL, "/"));
+
 		block = strtok(block, ".");
 		info.data |= atoi(block) << 24;
 
@@ -99,9 +106,31 @@ int32_t main(int argc, char *argv[])
 	{
 		info.data = atoi(block);
 	}
+	else if (!strcmp(type, "word") || !strcmp(type, "WORD"))
+	{
+		info.op |= STR;
+		
+		uint32_t lenght = strlen(block) + 1; // Word/size + \0
+		if (lenght > 511)
+		{
+			printf("Word must be of size < 510 chars + \\0\n");
+			return 1;
+		}
+
+		char * limit 	= (char *) malloc(sizeof(char) * lenght);
+
+		memcpy(limit, block, lenght);
+
+		info.alt = limit;
+
+		info.lim = lenght;
+
+
+		free(limit);
+	}
 	else
 	{
-		printf("<type> can be either IP or PORT\n");
+		printf("<type> can be either IP, PORT or WORD\n");
 		return 0;
 	}
 
@@ -131,7 +160,7 @@ int32_t main(int argc, char *argv[])
 	else
 	{
 		printf("PACKAGE SENT.\n");
-		printf("DATA: lim=%hhd, data=%d, ways=%d\n", info.lim, info.data, info.ways);
+		printf("DATA: lim=%hhu, data=%d, ways=%d\n", info.lim, info.data, info.ways);
 	}
 
 	close(sockfd);

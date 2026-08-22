@@ -22,7 +22,7 @@ tcp * set_tcp(uint8_t *payload)
 	int16_t optsiz = (ret->header->offset * 4) - 20;
 	if (optsiz > 0)
 	{
-		ret->header->options = (uint8_t *) malloc(sizeof(uint8_t) * optsiz);
+		ret->header->options = (uint8_t *) malloc(sizeof(uint8_t) * optsiz); // Options are inverted
 		memcpy(ret->header->options, &payload[20], optsiz);
 	}
 
@@ -31,9 +31,71 @@ tcp * set_tcp(uint8_t *payload)
 		ret->header->options = NULL;
 	}
 	
-	ret->msg = &payload[ret->header->offset];
+	ret->msg = &payload[ret->header->offset * 4];
 
 	return ret;
+}
+
+uint8_t set_optflags(tcp *pack, uint8_t options)
+{
+	int16_t optsize = (pack->header->offset * 4) - 20;
+	if (optsize <= 0)
+	{
+		return 1;
+	}
+
+	// T L V
+	uint8_t byte;
+
+	uint16_t tsize = 0;
+	uint8_t type = 0;
+	uint8_t size = 0;
+	uint8_t value[40];
+
+	for (uint16_t i = 0; i < optsize; i++)
+	{	
+		byte = pack->header->options[i];
+		if (!byte)
+		{
+			break;
+		}
+		else if (type == 0x1)
+		{
+			continue;
+		}
+
+		type = !type? byte: type;
+		if (type && !size)
+		{
+			size = byte;
+			tsize += size;
+
+			if (tsize > optsize)
+			{
+				return 1;
+			}
+
+			if (size - 2 <= 0 || !(type & options))
+			{
+				continue ;
+			}
+
+			memcpy(value, pack->header->options + i + 1, size - 2);
+				
+
+			type = 0;
+			size = 0;
+			i += size - 1; 
+		}
+
+		
+
+		
+
+	}
+
+
+	return 0;
 }
 
 tcphdr * tcp_extract(uint8_t *payload)
@@ -116,21 +178,20 @@ uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t seqnum, ip *info)
 			pack->header->acknum = seqnum + 1;
 
 			pack->header->winsiz = WINSIZE;
-				
-			uint32_t temp = info->from;
-			info->from = info->to;
-			info->to   = temp;
-			info->ihl   = 5;
-			info->tot_lenght = 40; // TCP: 20 bytes
 		
-			temp = pack->header->source;
-			pack->header->source = pack->header->destin;
-			pack->header->destin = temp;
+
+			ip send_info;
+			ip_cpy(&send_info, info);
+
+			send_info.from  = info->to;
+			send_info.to	= info->from;
+			send_info.ihl	= 5;
+			send_info.tot_lenght = 40;
 
 			pack->header->flags = *tw_stage;
 			pack->header->offset = 5;
 
-			pack->header->checksum = tcp_check(pack, info, 0);
+			pack->header->checksum = tcp_check(pack, &send_info, 0);
 
 			return 0;
 		}
@@ -163,12 +224,14 @@ uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t seqnum, ip *info)
 
 void tcp_free(tcp *pack)
 {
-	if (pack->header->options != NULL)
+	if ((pack->header->offset * 4 - 20) > 0)
 	{
 		free(pack->header->options);
 	}
 	free(pack->header);
 	free(pack);
+
+	return ;
 }
 
 uint32_t unix_random()

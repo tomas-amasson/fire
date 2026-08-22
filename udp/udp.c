@@ -33,6 +33,7 @@ uint8_t udp_check(udp *package, uint32_t source, uint32_t destin, uint32_t reals
 
 	if (header->lenght > realsz)
 	{
+		printf("Lenght: %hd > %hd\n", header->lenght, realsz);
 		return 1;
 	}
 
@@ -75,6 +76,8 @@ uint8_t udp_check(udp *package, uint32_t source, uint32_t destin, uint32_t reals
 	ret = ~(udp_checksum(lenght, pseudo));
 
 	free(pseudo);
+
+	printf("%d\n", ret);
 	return (!ret) ? 0: 1;
 }
 

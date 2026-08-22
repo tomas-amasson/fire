@@ -10,11 +10,10 @@ void ip_fill(ip *ret, uint8_t *payload)
 	ret->id         = from8to16(payload[4], payload[5]);
 
         uint16_t itlfrag   = from8to16(payload[6], payload[7]);
-	uint8_t flag	= from16to8(itlfrag); // Top preserved
 
 	// 0100 0000 0000 0000
 	// 0100 0000
-	ret->MF		= flag & 0x20;
+	ret->MF		= (payload[6] & 0x20) >> 5;
         ret->offset	= itlfrag & 0x1FFF;
 
 	ret->ttl	= payload[8];
@@ -176,4 +175,21 @@ uint16_t checksum(uint8_t *data, uint16_t lenght, uint32_t start)
 
 	return (~(start & 0xFFFF));
 
+}
+
+void ip_cpy(ip * copied, ip * original)
+{
+	copied->ihl 	= original->ihl;
+	copied->type 	= original->type;
+	copied->tot_lenght = original->tot_lenght;
+	copied->id 	= original->id;
+	copied->MF 	= original->MF;
+	copied->offset 	= original->offset;
+	copied->ttl 	= original->ttl;
+	copied->protocol = original->protocol;
+	copied->checksum = original->checksum;
+	copied->from 	= original->from;
+	copied->to 	= original->to;
+
+	return ;
 }

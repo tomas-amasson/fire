@@ -25,12 +25,14 @@
 #include "udp/udp.h"
 #include "tcp/tcp.h"
 #include "trie/trie.h"
+#include "linkedlist/linked.h"
 
 #pragma pack(1)
 
 #define MTU	1500
-#define STATELESS "statrules.bin"
-#define SOCKPATH  "rules.sock"
+#define STATELESS	"statrules.bin"
+#define FWORDS	  	"words.bin"
+#define SOCKPATH  	"rules.sock"
 
 // RET values
 
@@ -46,13 +48,18 @@
 #define THREADRL	1
 #define THREADPK	NTHREADS - THREADRL
 #define RULETYPE	2
+#define MAXRULESWD	100
+
+#define TCP_OPTIONS	0x11
 
 typedef struct rules{
 	uint8_t op;
 	uint8_t lim;
 	uint8_t ways;
 	uint32_t data;
-} rules;
+	void 	*alt;
+} rules; // 64 bits, 8 bytes
+
 
 
 uint32_t set_TUN();
@@ -65,12 +72,13 @@ uint8_t  validate_package_thread(uint8_t *payload);
 void * start_worker(void *arg);
 void * start_worker_rule(void *arg);
 
-
 uint8_t check_stateless(void *pack, uint8_t protocol);
+uint8_t check_forbidden(uint8_t *msg, uint16_t lenght, lklist * rules);
 
 void tcp_package_loss();
 void package_denied();
 void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_in *addr);
+
 
 void see_package(uint8_t *msg);
 void decode(udp *pack);
@@ -82,6 +90,7 @@ uint8_t nodata(uint8_t *head);
 /* MUTEXES */
 pthread_mutex_t hash_rw = PTHREAD_MUTEX_INITIALIZER; 
 pthread_mutex_t q_write = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mx_rule = PTHREAD_MUTEX_INITIALIZER;
 
 pthread_cond_t	wake	= PTHREAD_COND_INITIALIZER;
 pthread_cond_t 	rwake	= PTHREAD_COND_INITIALIZER;
@@ -95,6 +104,7 @@ hash *fr_hash 	= NULL;
 /* RULES */
 trtree * port_rules 	= NULL;
 trtree * ip_rules	= NULL;
+lklist * word_rules	= NULL;
 
 uint32_t tunfd;
 uint32_t exitfd;
@@ -151,6 +161,7 @@ int main(int argc, char *argv[])
 	// Load Rules 
 	port_rules 	= trtree_init();
 	ip_rules	= trtree_init();
+	word_rules	= lklist_init();
 	load_stateless();
 
 	uint32_t sockfd = setup_socket();
@@ -375,10 +386,28 @@ void *start_worker_rule(void *arg)
 		pthread_mutex_unlock(&q_write);
 
 		rules *nr = (rules*) (copy);
-		printf("lim: %hhd, ways: %hhd, data: %d\n", nr->lim, nr->ways, nr->data); // DEBUG
+		printf("lim: %hhu, ways: %hhd, data: %d\n", nr->lim, nr->ways, nr->data); // DEBUG
 
 		// Action
-		if (nr->op)
+	
+		pthread_mutex_lock(&mx_rule); // Rules Mutex	
+		if (nr->op & 0x2) // 0x2 Stands for STR  
+		{
+			lknode * node;
+			if (nr->op & 0x1)
+			{	
+				node = lk_search(word_rules, nr->alt);
+				lk_remove(word_rules, node);
+			}
+
+			else
+			{
+				printf("size: %hhu\n", nr->lim);
+				node = lknode_init(nr->alt, nr->lim);
+				lk_insert(word_rules, node);
+			}
+		}
+		else if (nr->op)
 		{
 			if (!nr->lim)
 			{
@@ -397,7 +426,6 @@ void *start_worker_rule(void *arg)
 				if (tr_insert(port_rules, nr->data, 16, nr->ways, 16))
 				{
 					printf("RULE ADD FAILED.\n");
-					continue ;
 				}
 				else
 				{
@@ -409,7 +437,6 @@ void *start_worker_rule(void *arg)
 				if (tr_insert(ip_rules, nr->data, nr->lim, nr->ways, 32))
 				{
 					printf("RULE ADD FAILED.\n");
-					continue ;
 				}
 				else
 				{
@@ -417,6 +444,9 @@ void *start_worker_rule(void *arg)
 				}
 			}
 		}
+		printf("aberto\n");
+		pthread_mutex_unlock(&mx_rule);
+		
 	}
 
 	free(copy);
@@ -470,6 +500,10 @@ void *start_worker(void *arg)
 			// package_denied();
 			// tcp_close_connection();
 		}	
+		else if (ret == FRAGMENT)
+		{
+			printf("FRAGMENT DETECTED.\n");
+		}
 	}
 
 	free(copy);
@@ -483,17 +517,18 @@ void *start_worker(void *arg)
 uint8_t validate_package_thread(uint8_t *payload)
 {
 
-	uint8_t last = 0, frag = 0, ret = ACCEPTED;
+	uint8_t last = 0, frag = 0, ret = ACCEPTED, state = 1;
 	
-	see_package(payload);
 
 	hashnode *target;
 	fragment *fr;
-	void *pack; // Package behind IP protocol
+
+	// Generic structure for UDP/TCP packages
+	struct package *pack; // Package behind IP protocol
 
 	ip *ipp = ip_init(payload);
 	uint8_t *package_start = payload + (ipp->ihl * 4);
-	uint32_t realsz = ipp->tot_lenght - (ipp->ihl * 4);
+	uint32_t realsz = ipp->tot_lenght - (ipp->ihl * 4), msglen = 0;
 
 	struct sockaddr_in addr;
 	addr.sin_family = AF_INET;
@@ -527,7 +562,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 
 		}
 
-		fr = frag_init(ipp->offset, package_start, (uint8_t) ipp->MF, 0, 0, ipp->tot_lenght - (ipp->ihl * 4), payload);
+		fr = frag_init(ipp->offset * 8, package_start, (uint8_t) ipp->MF, 0, 0, ipp->tot_lenght - (ipp->ihl * 4), payload);
 		last = add_frag(target, fr);
 		
 		pthread_mutex_unlock(&hash_rw);
@@ -538,6 +573,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 			package_start = hash_obtain_package(target);
 			frag = 1;
 			realsz = target->expected;
+			printf("LAST\n");
 		}
 		else
 		{
@@ -549,30 +585,31 @@ uint8_t validate_package_thread(uint8_t *payload)
 	// Package Protocol Validation
 	if (ipp->protocol == 17) /* UDP */
 	{
-		pack = (udp *) set_udp(package_start);
+		pack = (struct package*) set_udp(package_start);
 		if (!pack)
 		{
 			free(ipp);
 			return CORRUPT;
 		}
 
-		if (udp_check(pack, ipp->from, ipp->to, realsz))
+		udp *upack = (udp *) pack;
+		if (udp_check(upack, ipp->from, ipp->to, realsz))
 		{
 			free(ipp);
-			udp_free(pack);
+			udp_free((udp *)pack);
 
 			return CORRUPT;
 		}
-		udp *upack = (udp *) pack;
 		
 		in_port_t port = upack->header->destin;
 		addr.sin_addr.s_addr = ipp->to;
 		addr.sin_port = port;
-		
+
+		msglen = upack->header->lenght - 8; // msg size - header size
 	}
 	else if (ipp->protocol == 6) /* TCP */
 	{
-		pack = (tcp *) set_tcp(package_start);
+		pack = (struct package*) set_tcp(package_start);
 		if (!pack)
 		{
 			free(ipp);
@@ -583,7 +620,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 		if (tcp_check(tpack, ipp, tpack->header->checksum))
 		{
 			free(ipp);
-			tcp_free(pack);
+			tcp_free((tcp *)pack);
 			return CORRUPT;
 		}
 
@@ -596,71 +633,81 @@ uint8_t validate_package_thread(uint8_t *payload)
 			target = hashn_init(tpack->header->destin, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol, 0);
 			add_hashn(fr_hash, target);
 
-			printf("SEQ:%d\n", tpack->header->seqnum);
 			fr = frag_init(0, package_start, 0, tpack->header->acknum, tpack->header->seqnum, ipp->tot_lenght - ipp->ihl, payload); // Save the first TCP header
 			add_frag(target, fr);
 		}	
 		pthread_mutex_unlock(&hash_rw);
 
-		// Already sets ipp/tpack to the correct values
-		uint8_t state = tcp_connect(tpack, &target->tw_stage, target->box->seqnum, ipp);
+		// Connection Stage
+		state = tcp_connect(tpack, &target->tw_stage, target->box->seqnum, ipp);
 
 		if (state == CORRUPT)
 		{
+			free(ipp);
+			tcp_free((tcp *)pack);
 			return CORRUPT;
 		}
-
-		// Send SYN/ACK Message
-		else if (state == CONNECT)
-		{
-			in_port_t port = tpack->header->source;
-			addr.sin_addr.s_addr 	= ipp->to;
-			addr.sin_port		= port; 
-
-			// Changes the payload ptr
-			ip *faked = ip_extract(payload);
-			
-
-			// Big Endian
-			faked->from 	= endianness32(ipp->from);
-			faked->to	= endianness32(ipp->to);
-			faked->tot_lenght = endianness16(ipp->tot_lenght);
-			faked->ihl	= ipp->ihl;
-			faked->checksum = 0;
-			faked->checksum = endianness16(checksum(payload, 20, 0));
-			
-			tcphdr *tfaked = tcp_extract(package_start);
-			tfaked->flags  = 0x12; //2 & 5 -> little (0001 0010) >> big  (0010 0001 0000 0101)
-			tfaked->reserved = 0;
-			tfaked->source = endianness16(tpack->header->source);
-			tfaked->destin = endianness16(tpack->header->destin);
-			tfaked->offset = 0x5; // 4 bits	
-			tfaked->acknum = endianness32(tpack->header->acknum);
-			tfaked->seqnum = endianness32(tpack->header->seqnum);
-			tfaked->checksum = endianness16(tpack->header->checksum);
-			tfaked->winsiz = endianness16(tpack->header->winsiz);
-			
-		}
-
 		else if (state == RECEIVE)
 		{
 		}
-		free(tpack->header->options);	// After Connection
+
+		if (tpack->header->offset * 4 - 20 > 0)
+		{
+			free(tpack->header->options);	// After Connection
+		}
 	}
+
+	// Not supported Protocol Number
 	else
 	{
 		free(ipp);
 		return INVALID;
 	}
 
-	// Stateless Rules Check
-	if (check_stateless(pack, ipp->protocol))
+	// Stateless Rules Check && Forbidden words
+	if (check_stateless(pack, ipp->protocol) || check_forbidden(pack->msg, (uint16_t)msglen, word_rules))
 	{
 		free(ipp);
 		free_protocol((struct package *) pack);
+
 		return CORRUPT;
 	}
-	//decode(*pack); // DEBUG
+
+	/* TCP */
+	// Send SYN/ACK Message
+	else if (state == CONNECT)
+	{
+		tcp * tpack = (tcp *) pack;
+
+		in_port_t port = tpack->header->source;
+		addr.sin_addr.s_addr 	= ipp->to;
+		addr.sin_port		= port; 
+
+		// Changes the payload ptr
+		ip *faked = ip_extract(payload);
+		
+		// Big Endian
+		faked->from 	= endianness32(ipp->to);
+		faked->to	= endianness32(ipp->from);
+		faked->tot_lenght = endianness16(40);
+		faked->ihl	= 5;
+		faked->checksum = 0;
+		faked->checksum = endianness16(checksum(payload, 20, 0));
+		
+		tcphdr *tfaked = tcp_extract(package_start);
+		tfaked->flags  = 0x12; //2 & 5 -> little (0001 0010) == big
+		tfaked->reserved = 0;
+		tfaked->source = endianness16(tpack->header->destin);
+		tfaked->destin = endianness16(tpack->header->source);
+		tfaked->offset = 0x5; // 4 bits	
+		tfaked->acknum = endianness32(tpack->header->acknum);
+		tfaked->seqnum = endianness32(tpack->header->seqnum);
+		tfaked->checksum = endianness16(tpack->header->checksum);
+		tfaked->winsiz = endianness16(tpack->header->winsiz);
+	}
+
+
+	/* UDP */
 	if (frag)
 	{
 		fragment *tracker = target->box;
@@ -718,33 +765,38 @@ uint8_t nodata(uint8_t *head)
 uint8_t check_stateless(void *pack, uint8_t protocol)
 {
 	trtree *tree = port_rules;
+	uint8_t ret  = 1; // Starts Blocked
+
+	pthread_mutex_lock(&mx_rule); // Rules Mutex
 	if (!protocol)
 	{
 		ip *spec = (ip *) pack;
 
 		printf("%b -> %b\n", spec->from, spec->to);
-		tree = ip_rules;
-		return blocked(tree, spec->to, 32, IN) || blocked(tree, spec->from, 32, OUT);
+		tree 	= ip_rules;
+		ret 	= blocked(tree, spec->to, 32, IN) || blocked(tree, spec->from, 32, OUT);
 	}
 	else if (protocol == 6)
 	{
 		tcp *spec = (tcp *) pack;
-		tree = ip_rules;
-		return blocked(tree, spec->header->destin, 32, IN) || blocked(tree, spec->header->source, 32, OUT);
+		tree 	= ip_rules;
+		ret 	= blocked(tree, spec->header->destin, 32, IN) || blocked(tree, spec->header->source, 32, OUT);
 
 	}
 	else if (protocol == 17)
 	{
 		udp *spec = (udp *) pack;
-		return blocked(tree, spec->header->destin, 16, IN) || blocked(tree, spec->header->source, 16, OUT);
+		ret 	= blocked(tree, spec->header->destin, 16, IN) || blocked(tree, spec->header->source, 16, OUT);
 	}
+	pthread_mutex_unlock(&mx_rule);
 
-	return 1;
+	return ret;
 
 }
 
 void load_stateless()
 {
+	// Multithreading haven't began
 	uint8_t ret;
 
 	uint32_t fd = open(STATELESS, O_RDONLY);
@@ -842,6 +894,7 @@ void save_rules()
 
 	for (uint8_t l = 0; l < RULETYPE; l++)
 	{
+		// Método de análise de registros de tamanho variável
 		switch(l)
 		{
 			case 0:
@@ -903,7 +956,6 @@ uint32_t setup_exit() // PARA INTERIOR SÓ ESCREVER EM TUNFD
 void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_in *addr)
 {
 	
-	see_package(pack);
 	if (destin & 0xA000000) // Mesmo ip da máquina = enviado para uma port
 	{
 		if (write(tunfd, (void *)pack, tsize) == -1)
@@ -918,7 +970,6 @@ void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_
 
 	else // Ip de fora, deve ser enviado para outra máquina
 	{
-		printf("packsize: %d\n", tsize);
 		if (sendto(exitfd, pack, tsize, 0, (struct sockaddr *) addr, sizeof(struct sockaddr_in)) == -1)
 		{
 			printf("Error: %s\n", strerror(errno));
@@ -930,5 +981,37 @@ void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_
 	}
 	
 	return ;
+}
+
+uint8_t check_forbidden(uint8_t *msg, uint16_t lenght, lklist * rules)
+{
+	// Adds null char
+	//
+	printf("len:%hu\n", lenght);
+	char * string = (char *) malloc(sizeof(char) * (lenght + 1));
+	memcpy(string, msg, lenght);
+	string[lenght] = '\0';
+
+	// Linked List head
+	char * found = NULL;
+
+	pthread_mutex_lock(&mx_rule);
+	lknode *tracker = rules->head;
+
+	// Checks all forbidden words
+	while (tracker != NULL)
+	{		
+		found = strstr(string, tracker->key);
+		if (found)
+		{
+			free(string);
+			pthread_mutex_unlock(&mx_rule);
+			return 1;
+		}
+	}
+	pthread_mutex_unlock(&mx_rule);
+
+	free(string);
+	return 0;
 }
 

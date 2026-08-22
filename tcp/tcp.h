@@ -38,6 +38,7 @@ typedef struct {
 } tcp;
 
 tcp * set_tcp(uint8_t *payload);
+uint8_t set_optflags(tcp *pack, uint8_t options);
 tcphdr * tcp_extract(uint8_t *payload);
 
 uint16_t tcp_check(tcp *pack, ip *info, uint16_t check);

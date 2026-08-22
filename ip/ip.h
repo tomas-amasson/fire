@@ -34,6 +34,7 @@ struct package {
 
 
 void ip_fill(ip *ret, uint8_t *payload);
+void ip_cpy(ip * copied, ip * original);
 ip* ip_init(uint8_t *payload);
 ip* ip_extract(uint8_t *payload);
 uint8_t ipv4_check(uint8_t *payload);
