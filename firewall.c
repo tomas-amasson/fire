@@ -1,3 +1,6 @@
+// CLEAR WORD_RULES BEFORE EXITING head = NULL?
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,8 +60,7 @@ typedef struct rules{
 	uint8_t lim;
 	uint8_t ways;
 	uint32_t data;
-	void 	*alt;
-} rules; // 64 bits, 8 bytes
+} rules; // 56 bits, 7 bytes
 
 
 
@@ -84,6 +86,7 @@ void see_package(uint8_t *msg);
 void decode(udp *pack);
 void turn_end(int32_t sig);
 uint8_t nodata(uint8_t *head);
+uint32_t max(uint32_t a, uint32_t b);
 
 // Global
 
@@ -317,6 +320,11 @@ int main(int argc, char *argv[])
 	tr_free(port_rules->root);
 	free(port_rules);
 
+	lklist_print(word_rules);
+	lklist_free(word_rules);
+	free(word_rules);
+
+
 	close(exitfd);
 	close(epollfd);
 	close(tunfd);
@@ -358,7 +366,7 @@ uint32_t set_TUN()
 void *start_worker_rule(void *arg)
 {
 	queue *q = arg;
-	uint8_t *copy = (uint8_t *) calloc(sizeof(rules), sizeof(uint8_t));
+	uint8_t *copy = (uint8_t *) calloc(sizeof(struct rules) + 511, sizeof(uint8_t));
 
 	while (!end)
 	{
@@ -382,29 +390,43 @@ void *start_worker_rule(void *arg)
 			continue ;
 		}
 
-		memcpy(copy, package, sizeof(rules));
+		memcpy(copy, package, sizeof(rules) + 511);
 		pthread_mutex_unlock(&q_write);
 
 		rules *nr = (rules*) (copy);
-		printf("lim: %hhu, ways: %hhd, data: %d\n", nr->lim, nr->ways, nr->data); // DEBUG
+		// printf("lim: %hhu, ways: %hhd, data: %d\n", nr->lim, nr->ways, nr->data); // DEBUG
 
 		// Action
 	
 		pthread_mutex_lock(&mx_rule); // Rules Mutex	
 		if (nr->op & 0x2) // 0x2 Stands for STR  
 		{
+			char * str = (char *) malloc(sizeof(char) * nr->lim);
+			memcpy(str, (copy + sizeof(struct rules)),  nr->lim);
+
 			lknode * node;
 			if (nr->op & 0x1)
 			{	
-				node = lk_search(word_rules, nr->alt);
-				lk_remove(word_rules, node);
+				node = lk_search(word_rules, str);
+				if (lk_remove(word_rules, node))
+				{
+					printf("Unable to remove word rule.\n");
+					free(str);
+				}
+				else
+				{
+					free(node->key);
+					free(node);
+				}
 			}
 
 			else
 			{
-				printf("size: %hhu\n", nr->lim);
-				node = lknode_init(nr->alt, nr->lim);
+				// With NULL char
+				node = lknode_init(str, nr->lim, nr->ways);
 				lk_insert(word_rules, node);
+
+				printf("NEW WORD RULE: %s\n", str);
 			}
 		}
 		else if (nr->op)
@@ -444,7 +466,6 @@ void *start_worker_rule(void *arg)
 				}
 			}
 		}
-		printf("aberto\n");
 		pthread_mutex_unlock(&mx_rule);
 		
 	}
@@ -573,7 +594,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 			package_start = hash_obtain_package(target);
 			frag = 1;
 			realsz = target->expected;
-			printf("LAST\n");
 		}
 		else
 		{
@@ -796,7 +816,7 @@ uint8_t check_stateless(void *pack, uint8_t protocol)
 
 void load_stateless()
 {
-	// Multithreading haven't began
+	// Multithreading haven't begun
 	uint8_t ret;
 
 	uint32_t fd = open(STATELESS, O_RDONLY);
@@ -806,9 +826,32 @@ void load_stateless()
 		return ;
 	}
 
+
 	rules fdata;
-	while (read(fd, &fdata, sizeof(struct rules)))
+	uint32_t sttsz = sizeof(struct rules); 
+	while (read(fd, &fdata, sttsz))
 	{
+		if (fdata.op & 0x2) // Detecting Strings
+		{
+			// Lim already includes NULL char
+			char * str = (char *) malloc(sizeof(char) * (fdata.lim));
+			read(fd, str, fdata.lim);
+
+
+			lknode * node = lknode_init(str, fdata.lim, fdata.ways);
+			if (lk_insert(word_rules, node))
+			{
+				printf("Unable to add rule: %s.\n", str);
+			}
+			else
+			{
+				printf("word: %s added\n", str);
+			}
+			//lklist_print(word_rules); // DEBUG
+
+			continue ;
+		}
+
 		if (fdata.op)
 		{
 			printf("%d - %b not blocked\n", fdata.data, fdata.data);
@@ -885,8 +928,8 @@ void save_rules()
 	trtree *ptr;
 	rules buf;
 
-	uint32_t size = ((port_rules->size > ip_rules->size) ? port_rules->size : ip_rules->size);
-
+	uint32_t size = max(port_rules->size, ip_rules->size);
+	uint32_t rulesz = sizeof(struct rules); 
 	// Port Rules
 
 	trnode ** anodes = (trnode **) malloc(sizeof(trnode *) * size);
@@ -894,7 +937,6 @@ void save_rules()
 
 	for (uint8_t l = 0; l < RULETYPE; l++)
 	{
-		// Método de análise de registros de tamanho variável
 		switch(l)
 		{
 			case 0:
@@ -922,7 +964,7 @@ void save_rules()
 			buf.ways = anodes[i]->ways;
 			buf.data = rulesl[i];
 
-			if (write(rulesfd, &buf, sizeof(struct rules)) == -1)
+			if (write(rulesfd, &buf, rulesz) == -1)
 			{
 				printf("Rules couldn't be saved.\n");
 			}
@@ -932,11 +974,52 @@ void save_rules()
 
 			}
 		}
-
 		free(rulesl);
 	}
-
 	free(anodes);
+
+	char str[512];
+
+	// Write Strings
+	lknode * tracker = word_rules->head;
+	while(tracker != NULL)
+	{
+		// Insert && String
+		buf.op = 0x2; 
+
+		// With NULL char
+		buf.lim = tracker->chars; //bebebebe
+		buf.ways = tracker->ways;
+		buf.data = 0;
+
+		// Write struct rules without alt ptr or string
+		if (write(rulesfd, &buf, rulesz) == -1)
+		{
+			printf("Rules couldn't be saved.\n");
+			printf("%s\n", strerror(errno));
+
+			tracker = tracker->forward;
+			continue ;
+		}
+
+		memset(str, 0, 512 * sizeof(char));
+		memcpy(str, tracker->key, tracker->chars);
+		if (write(rulesfd, str, tracker->chars) == -1)
+		{
+			printf("Rules couldn't be saved.\nData corrupted, RUN restart.sh to clear the rules file.\n");
+			close(rulesfd);
+
+			return ;
+		}
+		
+		else
+		{
+			printf("Rule: %s:%hhd -> %hd\n", str, buf.ways, tracker->chars);
+		}
+
+		tracker = tracker->forward;
+	}
+
 	close(rulesfd);
 
 	return ;
@@ -987,7 +1070,6 @@ uint8_t check_forbidden(uint8_t *msg, uint16_t lenght, lklist * rules)
 {
 	// Adds null char
 	//
-	printf("len:%hu\n", lenght);
 	char * string = (char *) malloc(sizeof(char) * (lenght + 1));
 	memcpy(string, msg, lenght);
 	string[lenght] = '\0';
@@ -1000,7 +1082,8 @@ uint8_t check_forbidden(uint8_t *msg, uint16_t lenght, lklist * rules)
 
 	// Checks all forbidden words
 	while (tracker != NULL)
-	{		
+	{
+		//printf("Checking for %s\n", (char *)tracker->key); // DEBUG
 		found = strstr(string, tracker->key);
 		if (found)
 		{
@@ -1008,6 +1091,8 @@ uint8_t check_forbidden(uint8_t *msg, uint16_t lenght, lklist * rules)
 			pthread_mutex_unlock(&mx_rule);
 			return 1;
 		}
+
+		tracker = tracker->forward;
 	}
 	pthread_mutex_unlock(&mx_rule);
 
@@ -1015,3 +1100,7 @@ uint8_t check_forbidden(uint8_t *msg, uint16_t lenght, lklist * rules)
 	return 0;
 }
 
+uint32_t max(uint32_t a, uint32_t b)
+{
+	return a > b? a: b;
+}

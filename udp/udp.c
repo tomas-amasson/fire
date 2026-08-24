@@ -77,7 +77,6 @@ uint8_t udp_check(udp *package, uint32_t source, uint32_t destin, uint32_t reals
 
 	free(pseudo);
 
-	printf("%d\n", ret);
 	return (!ret) ? 0: 1;
 }
 

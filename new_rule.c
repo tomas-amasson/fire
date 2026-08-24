@@ -23,8 +23,7 @@ typedef struct rules{
 	uint8_t op;
 	uint8_t lim;
 	uint8_t ways;
-	uint32_t data;
-	void 	* alt;
+	uint32_t data; // 56 bits = 7 bytes 
 } rules;
 
 
@@ -42,6 +41,10 @@ int32_t main(int argc, char *argv[])
 	char *io	= argv[4];
 	rules info;
 	memset(&info, 0, sizeof(struct rules));
+
+	void *package = &info;
+	uint8_t word = 0;
+
 
 	if (!strcmp(op, "add") || !strcmp(op, "ADD"))
 	{
@@ -117,16 +120,13 @@ int32_t main(int argc, char *argv[])
 			return 1;
 		}
 
-		char * limit 	= (char *) malloc(sizeof(char) * lenght);
-
-		memcpy(limit, block, lenght);
-
-		info.alt = limit;
-
 		info.lim = lenght;
+		package = (char *) malloc(sizeof(char) * (lenght + sizeof(struct rules)));
 
+		memcpy(package, &info, sizeof(struct rules));
+		memcpy((package + sizeof(struct rules)), block, lenght);
 
-		free(limit);
+		word = 1;
 	}
 	else
 	{
@@ -152,7 +152,10 @@ int32_t main(int argc, char *argv[])
 
 	socklen_t lenght = sizeof(destin);
 
-	if (sendto(sockfd, (void *) &info, sizeof(info), 0, (struct sockaddr *) &destin, lenght) < 0)
+	printf("pack size:%ld\n", sizeof(struct rules) + info.lim);
+	printf("struct size: %ld\n", sizeof(struct rules));
+
+	if (sendto(sockfd, (void *) package, sizeof(struct rules) + info.lim , 0, (struct sockaddr *) &destin, lenght) < 0)
 	{
 		printf("%s\n", strerror(errno));
 		printf("PACKAGE NOT SENT.\n");
@@ -161,6 +164,12 @@ int32_t main(int argc, char *argv[])
 	{
 		printf("PACKAGE SENT.\n");
 		printf("DATA: lim=%hhu, data=%d, ways=%d\n", info.lim, info.data, info.ways);
+	}
+
+	if (word)
+	{
+		printf("%s: %d\n", (char *)package + sizeof(struct rules), info.lim);
+		free(package);
 	}
 
 	close(sockfd);
