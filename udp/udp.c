@@ -25,6 +25,12 @@ udp * set_udp(uint8_t *payload)
 	return ret;
 }
 
+udphdr * udp_extract(uint8_t * payload)
+{
+	udphdr * ret = (udphdr *)payload;
+	return ret;
+}
+
 uint8_t udp_check(udp *package, uint32_t source, uint32_t destin, uint32_t realsz)
 {
 	udphdr *header 		= package->header;

@@ -21,6 +21,7 @@ typedef struct {
 
 
 udp * set_udp(uint8_t *package);
+udphdr * udp_extract(uint8_t * payload);
 
 uint8_t udp_check(udp *package, uint32_t source, uint32_t destin, uint32_t realsz);
 uint16_t udp_checksum(uint32_t lenght, uint8_t *msg);

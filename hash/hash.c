@@ -152,14 +152,25 @@ fragment * frag_init(uint16_t offset, uint8_t *data, uint8_t MF, uint32_t acknum
 	ret->backward 	= NULL;
 
 
-	ret->data 	= (uint8_t *) malloc(size);
-	ret->all	= (uint8_t *) malloc(size + 20); // IP header size
-	memcpy(ret->data, data, size);
-	memcpy(ret->all, all, size + 20);
+	ret->data = NULL;
+	if (data)
+	{
+		ret->data = (uint8_t *) malloc(size);
+		memcpy(ret->data, data, size);
+	}
+
+	ret->all = NULL;
+	if (all)
+	{
+		ret->all = (uint8_t *) malloc(size + 20); // IP header size
+		memcpy(ret->all, all, size + 20);
+	}
+
 
 	ret->offset 	= offset;
 	ret->MF		= MF;
 	ret->acknum	= acknum;
+	ret->seqnum	= seqnum;
 	ret->psize	= size;
 
 	return ret;

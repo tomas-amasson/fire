@@ -12,7 +12,7 @@ typedef struct fragment{
 	uint16_t offset;
 	uint8_t  MF;
 
-	/* TCP */
+	/* TCP  && ICMP */
 	uint32_t acknum;
 	uint32_t seqnum;
 
@@ -35,7 +35,7 @@ typedef struct hashnode{
 	uint16_t expected;
 	uint16_t received;
 
-	/* TCP */
+	/* TCP  && ICMP -> used for ECHO Req */
 	uint8_t  tw_stage; /* 1- SYN, 2- ACK, 3- FIN */
 	uint8_t  options[255];
 

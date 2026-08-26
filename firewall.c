@@ -1,5 +1,5 @@
-// CLEAR WORD_RULES BEFORE EXITING head = NULL?
-
+// CONTROLE DE FRAGMENTAÇÃO ID ICMP
+// FRAGMENTAÇÃO ENVIANDO UM PACOTE POR FRAGMENTO?
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +27,7 @@
 #include "ip/ip.h"
 #include "udp/udp.h"
 #include "tcp/tcp.h"
+#include "icmp/icmp.h"
 #include "trie/trie.h"
 #include "linkedlist/linked.h"
 
@@ -82,7 +83,7 @@ void package_denied();
 void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_in *addr);
 
 
-void see_package(uint8_t *msg);
+void see_package(uint8_t *msg, uint32_t size);
 void decode(udp *pack);
 void turn_end(int32_t sig);
 uint8_t nodata(uint8_t *head);
@@ -543,6 +544,8 @@ uint8_t validate_package_thread(uint8_t *payload)
 
 	hashnode *target;
 	fragment *fr;
+	uint8_t * package_done = payload;
+
 
 	// Generic structure for UDP/TCP packages
 	struct package *pack; // Package behind IP protocol
@@ -573,17 +576,22 @@ uint8_t validate_package_thread(uint8_t *payload)
 	// Houve fragmentação
 	if (ipp->MF || ipp->offset > 0)
 	{
+		uint16_t portin 	= 0;
+		uint16_t portout 	= 0;
+		uint16_t seqnum		= 0;
+		uint16_t id		= ipp->id; // To handle ICMP fragmentation followed by an echo reply 
+
 		pthread_mutex_lock(&hash_rw);
-		target = search_hn(fr_hash, ipp->id, ipp->from, ipp->to, 0, 0, ipp->protocol);
+		target = search_hn(fr_hash, id, ipp->from, ipp->to, portin, portout, ipp->protocol);
 	
 		if (target == NULL)
 		{
-			target = hashn_init(ipp->id, ipp->from, ipp->to, 0, 0, ipp->protocol, 0);
+			target = hashn_init(id, ipp->from, ipp->to, portin, portout, ipp->protocol, 0);
 			add_hashn(fr_hash, target);
-
 		}
 
-		fr = frag_init(ipp->offset * 8, package_start, (uint8_t) ipp->MF, 0, 0, ipp->tot_lenght - (ipp->ihl * 4), payload);
+		fr = frag_init(ipp->offset * 8, package_start, (uint8_t) ipp->MF, 0, seqnum, ipp->tot_lenght - (ipp->ihl * 4), payload);
+
 		last = add_frag(target, fr);
 		
 		pthread_mutex_unlock(&hash_rw);
@@ -594,6 +602,14 @@ uint8_t validate_package_thread(uint8_t *payload)
 			package_start = hash_obtain_package(target);
 			frag = 1;
 			realsz = target->expected;
+
+			// Exceptions
+			if (ipp->protocol == 1) // ICMP
+			{
+				icmphdr * hdr = icmp_extract(package_start);
+				target->id = endianness16(hdr->id);
+				target->box->seqnum = endianness16(hdr->seqnum) - 1; // Big Endian, -1 to match the first case
+			}
 		}
 		else
 		{
@@ -645,12 +661,11 @@ uint8_t validate_package_thread(uint8_t *payload)
 		}
 
 		pthread_mutex_lock(&hash_rw);
-		target = search_hn(fr_hash, tpack->header->destin, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol);
+		target = search_hn(fr_hash, 0, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol);
 
 		if (!target)
 		{
-			// Destin PORT Used as ID
-			target = hashn_init(tpack->header->destin, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol, 0);
+			target = hashn_init(0, ipp->from, ipp->to, tpack->header->source, tpack->header->destin, ipp->protocol, 0);
 			add_hashn(fr_hash, target);
 
 			fr = frag_init(0, package_start, 0, tpack->header->acknum, tpack->header->seqnum, ipp->tot_lenght - ipp->ihl, payload); // Save the first TCP header
@@ -675,6 +690,97 @@ uint8_t validate_package_thread(uint8_t *payload)
 		{
 			free(tpack->header->options);	// After Connection
 		}
+	}
+	
+	
+	else if (ipp->protocol == 1) /* ICMP */
+	{
+		pack = (struct package *) icmp_init(package_start); 
+		if (!pack)
+		{
+			free(ipp);
+			return CORRUPT;
+		}
+	
+		icmp * ipack = (icmp *)pack;
+		if (icmp_check(ipack, realsz))
+		{
+			free(ipp);
+			free_protocol((struct package *) ipack);
+			return CORRUPT;
+		}
+
+		pthread_mutex_lock(&hash_rw);
+		hashnode * req = search_hn(fr_hash, ipack->header->id, ipp->from, ipp->to, 0, 0, 1);
+
+		if (!req) // Either it's the first package (without fragmentation) or it's wrong
+		{
+			if (ipack->header->type == ECHOREQ)
+			{
+				// Create hash entry with ICMP ID in IPV4 ID 
+				req = hashn_init(ipack->header->id, ipp->from, ipp->to, 0, 0, 1, ECHOREQ);
+				add_hashn(fr_hash, req);
+				
+				// Initializes seqnumber 
+				fragment *fr = frag_init(0, package_start, 1, 0, ipack->header->seqnum - 1, realsz, payload);
+				add_frag(req, fr);
+			}
+			else
+			{
+				pthread_mutex_unlock(&hash_rw);
+				free(ipp);
+				free_protocol((struct package *)ipack);
+				return CORRUPT;
+			}
+		}
+
+		// Checks if it's allowed to send/receive package
+		if (!icmp_echo_requested(req->tw_stage, ipack, (uint16_t *) &req->box->seqnum))
+		{
+			pthread_mutex_unlock(&hash_rw);
+			free(ipp);
+			free_protocol((struct package *) ipack);
+			return CORRUPT;
+		}
+
+		// Build ECHO REPLY Package
+		uint8_t * faking = (uint8_t *) calloc(MTU, sizeof(uint8_t));
+
+		// Suport to fragmentation
+		fragment * tracker = req->box;
+		while (tracker != NULL)
+		{
+			memcpy(faking, tracker->all, tracker->psize + 20);
+
+			// Faking IP Header
+			ip * faked_ip = ip_extract(faking);
+			
+			uint32_t destin = faked_ip->from;
+			faked_ip->from 	= faked_ip->to;
+			faked_ip->to 	= destin;
+			
+			uint8_t ihl 		= faked_ip->ihl * 4;
+			uint16_t tot_lenght 	= endianness16(faked_ip->tot_lenght);
+
+			faked_ip->checksum = 0;	
+			faked_ip->checksum = endianness16(checksum(faking, ihl, 0));
+
+			// Faking ICMP Header
+			if (!tracker->offset)
+			{
+				icmphdr * faked_icmp 	= icmp_extract(faking + ihl);
+				
+				faked_icmp->type 	= 0;
+				faked_icmp->seqnum	= endianness16(tracker->seqnum);
+
+				faked_icmp->checksum	= 0;
+				faked_icmp->checksum	= endianness16(checksum(faking + ihl, tot_lenght - ihl, 0));
+			}
+
+			package_done = faking;
+			tracker = tracker->forward;
+		}	
+		pthread_mutex_unlock(&hash_rw);
 	}
 
 	// Not supported Protocol Number
@@ -726,6 +832,8 @@ uint8_t validate_package_thread(uint8_t *payload)
 		tfaked->winsiz = endianness16(tpack->header->winsiz);
 	}
 
+	
+	see_package(package_done, realsz);
 
 	/* UDP */
 	if (frag)
@@ -743,7 +851,12 @@ uint8_t validate_package_thread(uint8_t *payload)
 	}
 	else
 	{
-		send_ahead(payload, ipp->to, ipp->tot_lenght, &addr);
+		send_ahead(package_done, ipp->to, ipp->tot_lenght, &addr);
+
+		if (ipp->protocol == 1)
+		{
+			free(package_done);
+		}
 	}
 
 	free_protocol((struct package *) pack);
@@ -756,9 +869,9 @@ void tcp_package_loss()
 	return ;
 }
 
-void see_package(uint8_t *msg)
+void see_package(uint8_t *msg, uint32_t size)
 {
-	for (uint32_t i = 0; i < 100; i++)
+	for (uint32_t i = 0; i < size; i++)
 	{
 		printf("%02x", msg[i]);
 	}
@@ -785,28 +898,26 @@ uint8_t nodata(uint8_t *head)
 uint8_t check_stateless(void *pack, uint8_t protocol)
 {
 	trtree *tree = port_rules;
-	uint8_t ret  = 1; // Starts Blocked
+	uint8_t ret  = 0; // Starts not Blocked because of ICMP (no validation)
 
 	pthread_mutex_lock(&mx_rule); // Rules Mutex
 	if (!protocol)
 	{
 		ip *spec = (ip *) pack;
-
-		printf("%b -> %b\n", spec->from, spec->to);
-		tree 	= ip_rules;
-		ret 	= blocked(tree, spec->to, 32, IN) || blocked(tree, spec->from, 32, OUT);
+		tree 	 = ip_rules;
+		ret 	 = blocked(tree, spec->to, 32, IN) || blocked(tree, spec->from, 32, OUT);
 	}
 	else if (protocol == 6)
 	{
 		tcp *spec = (tcp *) pack;
-		tree 	= ip_rules;
-		ret 	= blocked(tree, spec->header->destin, 32, IN) || blocked(tree, spec->header->source, 32, OUT);
+		tree 	  = ip_rules;
+		ret 	  = blocked(tree, spec->header->destin, 32, IN) || blocked(tree, spec->header->source, 32, OUT);
 
 	}
 	else if (protocol == 17)
 	{
 		udp *spec = (udp *) pack;
-		ret 	= blocked(tree, spec->header->destin, 16, IN) || blocked(tree, spec->header->source, 16, OUT);
+		ret 	  = blocked(tree, spec->header->destin, 16, IN) || blocked(tree, spec->header->source, 16, OUT);
 	}
 	pthread_mutex_unlock(&mx_rule);
 
@@ -988,7 +1099,7 @@ void save_rules()
 		buf.op = 0x2; 
 
 		// With NULL char
-		buf.lim = tracker->chars; //bebebebe
+		buf.lim = tracker->chars; 
 		buf.ways = tracker->ways;
 		buf.data = 0;
 
@@ -1038,7 +1149,6 @@ uint32_t setup_exit() // PARA INTERIOR SÓ ESCREVER EM TUNFD
 
 void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_in *addr)
 {
-	
 	if (destin & 0xA000000) // Mesmo ip da máquina = enviado para uma port
 	{
 		if (write(tunfd, (void *)pack, tsize) == -1)
