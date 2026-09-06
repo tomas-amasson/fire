@@ -107,22 +107,20 @@ void add_hashn(hash *h, hashnode * hn)
 	return ;
 }
 
-void pop_hashn(hash *h, hashnode *hn)
+uint8_t pop_hashn(hash *h, hashnode *hn)
 {
 	uint16_t id = hn->id;
 
 	if (h->array[id] == NULL)
 	{
-		return ;
+		return 1;
 	}
 	
 	hashnode * tracker = h->array[id];
-	hashnode * target;
 	if (tracker == hn)
 	{
 		h->array[id] = tracker->next;
 	}
-	
 	else
 	{
 		while (tracker->next != hn && tracker->next != NULL)
@@ -132,15 +130,17 @@ void pop_hashn(hash *h, hashnode *hn)
 
 		if (tracker->next == NULL)
 		{
-			return ;
+			return 1;
 		}
 
-		target = tracker->next;
-		tracker->next = target->next;
+		// [prev] -> [node] -> [...]
+		// tracker = prev
+		// tracker->next = node
+
+		tracker->next = tracker->next->next;
 	}
 
-	free_hashn(target);
-	return ;
+	return 0;
 }
 
 
@@ -276,4 +276,35 @@ uint8_t * hash_obtain_package(hashnode *hn)
 	}
 
 	return ret;
+}
+
+uint8_t change_hashn(hash *h, hashnode * node, uint32_t to)
+{
+	if (!node || !h)
+	{
+		return 1;
+	}
+
+	// Find hashnode // Validation
+	hashnode * tracker = h->array[node->id];
+	while (tracker != node)
+	{
+		if (tracker == NULL)
+		{
+			return 1;
+		}
+
+		tracker = tracker->next;
+	}
+
+	// Alter hash
+	if (pop_hashn(h, node))
+	{
+		return 1;
+	}
+	
+	node->id = to;
+	add_hashn(h, node);
+
+	return 0;
 }

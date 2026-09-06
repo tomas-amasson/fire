@@ -1,5 +1,7 @@
-// CONTROLE DE FRAGMENTAÇÃO ID ICMP
+
 // FRAGMENTAÇÃO ENVIANDO UM PACOTE POR FRAGMENTO?
+// QUANDO ENVIO O PRIMEIRO PACOTE CRIO UM HASHNODE, MAS E OS PRÓXIMOS (COM FRAGMENTAÇÃO)? SIMPLESMENTE SÃO JOGADOS NO FIM DE BOX??
+// FAKING NN ESTÁ SENDO LIVRE (FREED)
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -540,7 +542,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 {
 
 	uint8_t last = 0, frag = 0, ret = ACCEPTED, state = 1;
-	
 
 	hashnode *target;
 	fragment *fr;
@@ -606,10 +607,13 @@ uint8_t validate_package_thread(uint8_t *payload)
 			// Exceptions
 			if (ipp->protocol == 1) // ICMP
 			{
+				pthread_mutex_lock(&hash_rw);
 				icmphdr * hdr = icmp_extract(package_start);
-				target->id = endianness16(hdr->id);
+				change_hashn(fr_hash, target, endianness16(hdr->id));
 				target->box->seqnum = endianness16(hdr->seqnum) - 1; // Big Endian, -1 to match the first case
+				pthread_mutex_unlock(&hash_rw);
 			}
+			printf("NO MORE FRAGMENTS id:%hu, src:%hu dst:%hu pin:%hu pout:%hu prot: %hhu\n", target->id, target->source, target->destin, target->portin, target->portout, target->protocol); // END FRAG
 		}
 		else
 		{
@@ -713,8 +717,12 @@ uint8_t validate_package_thread(uint8_t *payload)
 		pthread_mutex_lock(&hash_rw);
 		hashnode * req = search_hn(fr_hash, ipack->header->id, ipp->from, ipp->to, 0, 0, 1);
 
+
+		printf("CLIENT:%p id:%hu src:%hu dst:%hu\n", req, ipack->header->id, ipp->from, ipp->to); // HASH ESTÁ NO ID ERRADO (ALTERADO ARTIFICIALMENTE)
+
 		if (!req) // Either it's the first package (without fragmentation) or it's wrong
 		{
+			printf("NOT FOUND,\n");
 			if (ipack->header->type == ECHOREQ)
 			{
 				// Create hash entry with ICMP ID in IPV4 ID 
@@ -724,6 +732,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 				// Initializes seqnumber 
 				fragment *fr = frag_init(0, package_start, 1, 0, ipack->header->seqnum - 1, realsz, payload);
 				add_frag(req, fr);
+				printf("Built.\n");
 			}
 			else
 			{
@@ -744,7 +753,8 @@ uint8_t validate_package_thread(uint8_t *payload)
 		}
 
 		// Build ECHO REPLY Package
-		uint8_t * faking = (uint8_t *) calloc(MTU, sizeof(uint8_t));
+		printf("SIZE: %d", realsz);
+		uint8_t * faking = (uint8_t *) calloc(realsz + 20, sizeof(uint8_t)); // size must be variable
 
 		// Suport to fragmentation
 		fragment * tracker = req->box;
@@ -833,8 +843,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 	}
 
 	
-	see_package(package_done, realsz);
-
 	/* UDP */
 	if (frag)
 	{
