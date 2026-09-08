@@ -278,6 +278,28 @@ uint8_t * hash_obtain_package(hashnode *hn)
 	return ret;
 }
 
+uint8_t * hash_obtain_all(hashnode *hn, uint16_t initial_increment)
+{
+	uint8_t *ret = (uint8_t *) malloc(sizeof(uint8_t));
+	uint32_t current = 0;
+	uint32_t csize = 0;
+
+	fragment *fr = hn->box;
+
+	while (fr)
+	{	
+		csize = (!current)? fr->psize + initial_increment: fr->psize;
+
+		ret = realloc(ret, sizeof(uint8_t) * (csize + current));
+		memcpy((ret + current), fr->all, csize);
+
+		current += csize;
+		fr = fr->forward;
+	}
+
+	return ret;
+}
+
 uint8_t change_hashn(hash *h, hashnode * node, uint32_t to)
 {
 	if (!node || !h)
@@ -307,4 +329,62 @@ uint8_t change_hashn(hash *h, hashnode * node, uint32_t to)
 	add_hashn(h, node);
 
 	return 0;
+}
+
+void 	fragpos_set(hashnode * hn, uint32_t fragstart, uint32_t fragend)
+{
+	if (hn == NULL)
+	{
+		return ;
+	}
+	
+	hn->fragstart 	= fragstart;
+	hn->fragend	= fragend;
+	
+	return ;
+}
+
+uint8_t pop_frag(hashnode *hn, fragment *fr)
+{
+	fragment * tracker = hn->box;
+
+	if (tracker == fr)
+	{
+		hn->box = fr->forward;
+		return 0;
+	}
+
+	while (tracker->forward != fr && tracker != NULL)
+	{
+		tracker = tracker->forward;
+	}
+	
+	if (tracker == NULL)
+	{
+		return 1;
+	}
+
+	tracker->forward = fr->forward;	
+
+	return 0;
+}
+
+uint8_t clear_frag(hashnode * hn)
+{
+		fragment * frag_send = hn->box; 
+		fragment * next = hn->box;
+	
+		while (next != NULL)
+		{
+			frag_send = next;
+			pop_frag(hn, frag_send);
+				
+			next = frag_send->forward;
+
+			free(frag_send->all);
+			free(frag_send->data);
+			free(frag_send);
+		}
+
+		return 0;
 }

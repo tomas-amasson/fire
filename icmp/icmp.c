@@ -71,40 +71,31 @@ uint8_t icmp_check(icmp * pack, uint32_t realsz)
 	return ret ? 1: 0;
 }
 
-uint8_t icmp_echo_requested(uint8_t state, icmp * current, uint16_t * prev_seqnum)
+uint8_t icmp_echo_requested(uint8_t * state, icmp * current, uint16_t * prev_seqnum)
 {
 	uint16_t seqnum = current->header->seqnum; 
 
 	switch (current->header->type)
 	{
 		case 0: // Echo Reply
-			if ((state & ECHOREQ) && (seqnum == (*prev_seqnum)))
-			{
-				// Request consumed
-				state /= ECHOREQ;
-				return 1;	
-			}		
+			// Request consumed
+			*state &= ~ECHOREQ;
+			return 1;	
 
-			return 0;
 			break;
 
 		case 8: // Echo Request
-			if (seqnum == (uint16_t)((*prev_seqnum) + 1))
-			{
-				// Flag the request
-				state |= ECHOREQ;
+			// Flag the request
+			*state |= ECHOREQ;
 
-				// Change the saved seqnum
-				(*prev_seqnum) = seqnum; 
+			// Change the saved seqnum
+			(*prev_seqnum) = seqnum; 
 
-				return 1;
-			}
+			return 1;
 
-			return 0;
 			break;
 
 		default:
-			printf("OTHER\n");
 			return 0;
 			break;
 	}

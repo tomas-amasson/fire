@@ -155,7 +155,7 @@ uint16_t checksum(uint8_t *data, uint16_t lenght, uint32_t start)
 	if (lenght & 0x1)
 	{
 		odd = 1;
-		start += sum16from8(data[lenght - 1], 0x00);
+		start += (uint32_t)(data[lenght - 1] << 8);
 	}
 	
 	// Package + Message
@@ -190,6 +190,13 @@ void ip_cpy(ip * copied, ip * original)
 	copied->checksum = original->checksum;
 	copied->from 	= original->from;
 	copied->to 	= original->to;
+
+	return ;
+}
+
+void show_ip(uint32_t uip)
+{
+	printf("%hhu.%hhu.%hhu.%hhu\n", uip >> 24, uip >> 16, uip >> 8, uip);
 
 	return ;
 }

@@ -98,7 +98,18 @@ uint8_t set_optflags(tcp *pack, uint8_t options)
 	return 0;
 }
 
-tcphdr * tcp_extract(uint8_t *payload)
+tcp * tcp_extract(uint8_t *payload)
+{
+	tcp * ret = (tcp *) malloc(sizeof(tcp));
+
+	ret->protocol 	= 6;
+	ret->header	= (tcphdr *) payload;
+	ret->msg	= &payload[ret->header->offset * 4];
+
+	return ret;
+}
+
+tcphdr * tcph_extract(uint8_t *payload)
 {
 	tcphdr * ret = (void *)payload;
 
@@ -161,6 +172,7 @@ uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t seqnum, ip *info)
 {
 	uint8_t flags = pack->header->flags;
 	uint8_t stage = *tw_stage;
+	uint32_t payload_size = (info->tot_lenght - (info->ihl + pack->header->offset) * 4);
 
 	// Begining of connection
 	if (flags == SYN)
@@ -193,7 +205,7 @@ uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t seqnum, ip *info)
 
 			pack->header->checksum = tcp_check(pack, &send_info, 0);
 
-			return 0;
+			return CONNECT;
 		}
 
 		// Connection Failed, try again.
@@ -208,14 +220,88 @@ uint8_t tcp_connect(tcp *pack, uint8_t *tw_stage, uint32_t seqnum, ip *info)
 		}
 	}
 
+	// Acknowledge TWH
 	else if (flags == ACK && (stage == (SYN | ACK)))
 	{
-		return 0;
+		if (payload_size <= 0)
+		{
+			printf("TCP CONNECTED\n");
+			*tw_stage = ACK;
+			return IGNORE;
+		}
 	}
 
-	else
+	// Three-Way-Handshake is done 
+	else if ((flags == ACK || flags == (PSH | ACK)) && (stage == ACK))
 	{
-		return 1;
+		if (payload_size <= 0) 
+		{
+			return 1;
+		}	
+
+
+		// Data will arrive now	
+		uint32_t acknum = pack->header->acknum;
+		pack->header->acknum = pack->header->seqnum + payload_size;
+		pack->header->seqnum = acknum;
+
+		*tw_stage = ACK;
+		ip send_info;
+		ip_cpy(&send_info, info);
+
+		send_info.from  = info->to;
+		send_info.to	= info->from;
+		send_info.ihl	= 5;
+		send_info.tot_lenght = 40;
+
+		pack->header->flags = *tw_stage;
+		pack->header->offset = 5;
+
+		pack->header->checksum = tcp_check(pack, &send_info, 0);
+
+		return RECEIVE;
+	}
+
+	// End Connection
+	else if (flags & FIN)
+	{
+		// Make sure the connection has been opened
+		if (stage & ACK)
+		{
+
+			*tw_stage = FIN | ACK;
+
+			uint32_t acknum = pack->header->acknum;
+
+			pack->header->acknum = pack->header->seqnum + 1;
+			pack->header->seqnum = acknum;
+
+			ip send_info;
+			ip_cpy(&send_info, info);
+
+			send_info.from  = info->to;
+			send_info.to	= info->from;
+			send_info.ihl	= 5;
+			send_info.tot_lenght = 40;
+
+			pack->header->flags = *tw_stage;
+			pack->header->offset = 5;
+
+			pack->header->checksum = tcp_check(pack, &send_info, 0);
+			return STARTEND;
+		}
+
+		else 
+		{
+			return 1;
+		}
+	}
+	
+	// Client has received FIN | ACK
+	if (flags == ACK  && stage == (FIN | ACK))
+	{
+		printf("TCP ENDED\n");
+		return END;
 	}
 
 	return 1;

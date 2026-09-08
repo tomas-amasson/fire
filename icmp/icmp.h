@@ -33,7 +33,7 @@ void icmp_fill(icmp * pack, uint8_t * payload);
 icmphdr * icmp_extract(uint8_t * payload);
 
 uint8_t icmp_check(icmp * pack, uint32_t realsz);
-uint8_t icmp_echo_requested(uint8_t stage, icmp * current, uint16_t * prev_seqnum);
+uint8_t icmp_echo_requested(uint8_t * stage, icmp * current, uint16_t * prev_seqnum);
 void icmp_free(icmp * pack);
 
 

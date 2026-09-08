@@ -3,11 +3,15 @@
 
 #pragma pack(1)
 
-#define CONNECT 0
-#define RECEIVE 2
+#define CONNECT  0
+#define RECEIVE  2
+#define STARTEND 3
+#define END	 4
+#define IGNORE	 5
 
 #define FIN	0x01
 #define SYN	0x02
+#define PSH	0x08
 #define ACK	0x10
 #define WINSIZE 0xffff
 
@@ -39,7 +43,9 @@ typedef struct {
 
 tcp * set_tcp(uint8_t *payload);
 uint8_t set_optflags(tcp *pack, uint8_t options);
-tcphdr * tcp_extract(uint8_t *payload);
+
+tcp * tcp_extract(uint8_t *payload);
+tcphdr * tcph_extract(uint8_t *payload);
 
 uint16_t tcp_check(tcp *pack, ip *info, uint16_t check);
 uint16_t tcp_checksum(uint8_t * msg, uint16_t lenght);

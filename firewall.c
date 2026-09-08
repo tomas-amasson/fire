@@ -1,8 +1,4 @@
-
-// FRAGMENTAÇÃO ENVIANDO UM PACOTE POR FRAGMENTO?
-// QUANDO ENVIO O PRIMEIRO PACOTE CRIO UM HASHNODE, MAS E OS PRÓXIMOS (COM FRAGMENTAÇÃO)? SIMPLESMENTE SÃO JOGADOS NO FIM DE BOX??
-// FAKING NN ESTÁ SENDO LIVRE (FREED)
-
+// Consertar PING
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +33,7 @@
 
 #define MTU	1500
 #define STATELESS	"statrules.bin"
-#define FWORDS	  	"words.bin"
+	#define FWORDS	  	"words.bin"
 #define SOCKPATH  	"rules.sock"
 
 // RET values
@@ -80,7 +76,6 @@ void * start_worker_rule(void *arg);
 uint8_t check_stateless(void *pack, uint8_t protocol);
 uint8_t check_forbidden(uint8_t *msg, uint16_t lenght, lklist * rules);
 
-void tcp_package_loss();
 void package_denied();
 void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_in *addr);
 
@@ -97,6 +92,7 @@ uint32_t max(uint32_t a, uint32_t b);
 pthread_mutex_t hash_rw = PTHREAD_MUTEX_INITIALIZER; 
 pthread_mutex_t q_write = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mx_rule = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t send_w	= PTHREAD_MUTEX_INITIALIZER;
 
 pthread_cond_t	wake	= PTHREAD_COND_INITIALIZER;
 pthread_cond_t 	rwake	= PTHREAD_COND_INITIALIZER;
@@ -528,6 +524,10 @@ void *start_worker(void *arg)
 		{
 			printf("FRAGMENT DETECTED.\n");
 		}
+		else if (ret == IGNORE)
+		{
+			continue;
+		}
 	}
 
 	free(copy);
@@ -543,7 +543,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 
 	uint8_t last = 0, frag = 0, ret = ACCEPTED, state = 1;
 
-	hashnode *target;
+	hashnode *target = NULL;
 	fragment *fr;
 	uint8_t * package_done = payload;
 
@@ -613,7 +613,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 				target->box->seqnum = endianness16(hdr->seqnum) - 1; // Big Endian, -1 to match the first case
 				pthread_mutex_unlock(&hash_rw);
 			}
-			printf("NO MORE FRAGMENTS id:%hu, src:%hu dst:%hu pin:%hu pout:%hu prot: %hhu\n", target->id, target->source, target->destin, target->portin, target->portout, target->protocol); // END FRAG
 		}
 		else
 		{
@@ -680,19 +679,11 @@ uint8_t validate_package_thread(uint8_t *payload)
 		// Connection Stage
 		state = tcp_connect(tpack, &target->tw_stage, target->box->seqnum, ipp);
 
-		if (state == CORRUPT)
+		if (state == CORRUPT || state == IGNORE)
 		{
 			free(ipp);
 			tcp_free((tcp *)pack);
-			return CORRUPT;
-		}
-		else if (state == RECEIVE)
-		{
-		}
-
-		if (tpack->header->offset * 4 - 20 > 0)
-		{
-			free(tpack->header->options);	// After Connection
+			return state;
 		}
 	}
 	
@@ -717,12 +708,8 @@ uint8_t validate_package_thread(uint8_t *payload)
 		pthread_mutex_lock(&hash_rw);
 		hashnode * req = search_hn(fr_hash, ipack->header->id, ipp->from, ipp->to, 0, 0, 1);
 
-
-		printf("CLIENT:%p id:%hu src:%hu dst:%hu\n", req, ipack->header->id, ipp->from, ipp->to); // HASH ESTÁ NO ID ERRADO (ALTERADO ARTIFICIALMENTE)
-
 		if (!req) // Either it's the first package (without fragmentation) or it's wrong
 		{
-			printf("NOT FOUND,\n");
 			if (ipack->header->type == ECHOREQ)
 			{
 				// Create hash entry with ICMP ID in IPV4 ID 
@@ -732,7 +719,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 				// Initializes seqnumber 
 				fragment *fr = frag_init(0, package_start, 1, 0, ipack->header->seqnum - 1, realsz, payload);
 				add_frag(req, fr);
-				printf("Built.\n");
 			}
 			else
 			{
@@ -744,7 +730,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 		}
 
 		// Checks if it's allowed to send/receive package
-		if (!icmp_echo_requested(req->tw_stage, ipack, (uint16_t *) &req->box->seqnum))
+		if (!icmp_echo_requested(&req->tw_stage, ipack, (uint16_t *) &req->box->seqnum))
 		{
 			pthread_mutex_unlock(&hash_rw);
 			free(ipp);
@@ -753,44 +739,67 @@ uint8_t validate_package_thread(uint8_t *payload)
 		}
 
 		// Build ECHO REPLY Package
-		printf("SIZE: %d", realsz);
-		uint8_t * faking = (uint8_t *) calloc(realsz + 20, sizeof(uint8_t)); // size must be variable
+		// Can be altered freely
+		hashnode * sender = search_hn(fr_hash, ipack->header->id, ipp->to, ipp->from, 0, 0, 1);
+		if (sender == NULL)
+		{
+			// Create new hashnode to avoid future consequences
+			sender = hashn_init(ipack->header->id, ipp->to, ipp->from, 0, 0, 1, ECHOREP);
+			add_hashn(fr_hash, sender);
+		}
 
 		// Suport to fragmentation
-		fragment * tracker = req->box;
-		while (tracker != NULL)
+		fragment * original = (target != NULL) ? target->box: req->box; // Depends if there's fragmentation
+		fragment * newfrag;
+
+		// Clear sender fragments
+		pthread_mutex_lock(&send_w);
+		clear_frag(sender);	
+
+		// Fill sender fragments
+		uint8_t * all;
+		while (original != NULL)
 		{
-			memcpy(faking, tracker->all, tracker->psize + 20);
+			// frag_init function copies all the buffers (data && all)
+			newfrag = frag_init(original->offset, original->data, original->MF, original->acknum, original->seqnum, original->psize, original->all);
+			add_frag(sender, newfrag);
+
+			all = newfrag->all;
 
 			// Faking IP Header
-			ip * faked_ip = ip_extract(faking);
+			ip * faked_ip = ip_extract(all);
 			
 			uint32_t destin = faked_ip->from;
-			faked_ip->from 	= faked_ip->to;
-			faked_ip->to 	= destin;
-			
+			fill8from32(all + 12, endianness32(faked_ip->to));
+			fill8from32(all + 16, endianness32(destin));
+
 			uint8_t ihl 		= faked_ip->ihl * 4;
 			uint16_t tot_lenght 	= endianness16(faked_ip->tot_lenght);
 
 			faked_ip->checksum = 0;	
-			faked_ip->checksum = endianness16(checksum(faking, ihl, 0));
+			faked_ip->checksum = endianness16(checksum(all, ihl, 0));
 
-			// Faking ICMP Header
-			if (!tracker->offset)
+			// Faking ICMP Header (offset == 0)
+			if (!newfrag->offset)
 			{
-				icmphdr * faked_icmp 	= icmp_extract(faking + ihl);
-				
+				icmphdr * faked_icmp 	= icmp_extract(all + ihl);
 				faked_icmp->type 	= 0;
-				faked_icmp->seqnum	= endianness16(tracker->seqnum);
-
+				faked_icmp->seqnum	= endianness16(original->seqnum); 
 				faked_icmp->checksum	= 0;
-				faked_icmp->checksum	= endianness16(checksum(faking + ihl, tot_lenght - ihl, 0));
+				faked_icmp->checksum	= endianness16(checksum(all + ihl, tot_lenght - ihl, 0));
+				addr.sin_addr.s_addr 	= faked_ip->to;
 			}
 
-			package_done = faking;
-			tracker = tracker->forward;
-		}	
+
+			// Only for not fragmented packages
+			package_done = all;
+
+			original = original->forward;
+		}
 		pthread_mutex_unlock(&hash_rw);
+
+		// Only for fragmented packages
+		target = sender;
 	}
 
 	// Not supported Protocol Number
@@ -803,16 +812,36 @@ uint8_t validate_package_thread(uint8_t *payload)
 	// Stateless Rules Check && Forbidden words
 	if (check_stateless(pack, ipp->protocol) || check_forbidden(pack->msg, (uint16_t)msglen, word_rules))
 	{
-		free(ipp);
-		free_protocol((struct package *) pack);
+		if (frag)
+		{
+			free(package_start);
+		}
 
+		if (ipp->protocol == 6) // TCP Header is bigger
+		{
+			tcp_free((tcp *) pack);
+		}
+		else
+		{
+			free_protocol((struct package *) pack);
+		}
+
+		free(ipp);
+
+		pthread_mutex_unlock(&send_w);
 		return CORRUPT;
 	}
 
 	/* TCP */
 	// Send SYN/ACK Message
-	else if (state == CONNECT)
+	else if (state == CONNECT || state == STARTEND || state == RECEIVE)
 	{
+		if (state == RECEIVE)
+		{
+			// Acknowledge Packge Later
+			send_ahead(package_done, ipp->to, ipp->tot_lenght, &addr);
+		}
+
 		tcp * tpack = (tcp *) pack;
 
 		in_port_t port = tpack->header->source;
@@ -830,26 +859,55 @@ uint8_t validate_package_thread(uint8_t *payload)
 		faked->checksum = 0;
 		faked->checksum = endianness16(checksum(payload, 20, 0));
 		
-		tcphdr *tfaked = tcp_extract(package_start);
-		tfaked->flags  = 0x12; //2 & 5 -> little (0001 0010) == big
+		tcphdr *tfaked = tcph_extract(package_start);
+		tfaked->flags  = target->tw_stage;
+
 		tfaked->reserved = 0;
 		tfaked->source = endianness16(tpack->header->destin);
 		tfaked->destin = endianness16(tpack->header->source);
 		tfaked->offset = 0x5; // 4 bits	
 		tfaked->acknum = endianness32(tpack->header->acknum);
 		tfaked->seqnum = endianness32(tpack->header->seqnum);
+
 		tfaked->checksum = endianness16(tpack->header->checksum);
 		tfaked->winsiz = endianness16(tpack->header->winsiz);
 	}
 
-	
-	/* UDP */
+	else if (state == END)
+	{
+		// Clear hash
+
+		pthread_mutex_lock(&hash_rw);	
+		target = search_hn(fr_hash, 0, ipp->from, ipp->to, ((tcp *) pack)->header->source, ((tcp *) pack)->header->destin, ipp->protocol);
+
+		if (target == NULL)
+		{
+
+			free(ipp);
+			tcp_free((tcp *) pack);
+			return CORRUPT;
+		}
+
+		pop_hashn(fr_hash, target);
+		pthread_mutex_unlock(&hash_rw);
+
+		free_hashn(target);
+
+		tcp_free((tcp *) pack);
+		free(ipp);
+
+		printf("TCP CLOSED.\n");
+		return ACCEPTED;
+	}
+
 	if (frag)
 	{
 		fragment *tracker = target->box;
+
 		while (tracker)
 		{
-			ip *temp = ip_init(tracker->all);	
+			ip *temp = ip_init(tracker->all);
+			show_ip(temp->to);
 			send_ahead(tracker->all, temp->to, temp->tot_lenght, &addr);
 			tracker = tracker->forward;
 			free(temp);
@@ -859,22 +917,22 @@ uint8_t validate_package_thread(uint8_t *payload)
 	}
 	else
 	{
+		printf("Sending to %u\n", ipp->to);
 		send_ahead(package_done, ipp->to, ipp->tot_lenght, &addr);
-
-		if (ipp->protocol == 1)
-		{
-			free(package_done);
-		}
 	}
 
-	free_protocol((struct package *) pack);
+	if (ipp->protocol == 6)
+	{
+		tcp_free((tcp *) pack);
+	}
+	else
+	{
+		free_protocol((struct package *) pack);
+	}
+	pthread_mutex_unlock(&send_w);
+
 	free(ipp);
 	return ret;	
-}
-
-void tcp_package_loss()
-{
-	return ;
 }
 
 void see_package(uint8_t *msg, uint32_t size)
@@ -1144,7 +1202,7 @@ void save_rules()
 	return ;
 }
 
-uint32_t setup_exit() // PARA INTERIOR SÓ ESCREVER EM TUNFD
+uint32_t setup_exit() 
 {
 	uint32_t fd = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
 	if (fd < 0)
