@@ -813,8 +813,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 	}
 
 	// Stateless Rules Check && Forbidden words
-	see_package(pack->msg, 20);
-	printf("%d\n", msglen);
 	if (check_stateless(pack, ipp->protocol) || check_forbidden(pack->msg, (uint16_t)msglen, word_rules))
 	{
 		if (frag)
@@ -1267,7 +1265,6 @@ uint8_t check_forbidden(uint8_t *msg, uint16_t lenght, lklist * rules)
 	{
 		//printf("Checking for %s\n", (char *)tracker->key); // DEBUG
 		found = strstr(string, tracker->key);
-		printf("%s\n", string);
 		if (found)
 		{
 			free(string);
