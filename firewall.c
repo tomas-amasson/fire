@@ -785,9 +785,11 @@ uint8_t validate_package_thread(uint8_t *payload)
 				icmphdr * faked_icmp 	= icmp_extract(all + ihl);
 				faked_icmp->type 	= 0;
 				faked_icmp->seqnum	= endianness16(original->seqnum); 
+
+				// Checksum must relly on all fragments
 				faked_icmp->checksum	= 0;
-				faked_icmp->checksum	= endianness16(checksum(all + ihl, tot_lenght - ihl, 0));
-				addr.sin_addr.s_addr 	= faked_ip->to;
+				faked_icmp->checksum	= endianness16(checksum(package_start + ihl, frag? target->received - ihl: tot_lenght - ihl, 0));
+				addr.sin_addr.s_addr 	= endianness32(faked_ip->to);
 			}
 
 
@@ -907,7 +909,7 @@ uint8_t validate_package_thread(uint8_t *payload)
 		while (tracker)
 		{
 			ip *temp = ip_init(tracker->all);
-			show_ip(temp->to);
+
 			send_ahead(tracker->all, temp->to, temp->tot_lenght, &addr);
 			tracker = tracker->forward;
 			free(temp);
@@ -917,7 +919,6 @@ uint8_t validate_package_thread(uint8_t *payload)
 	}
 	else
 	{
-		printf("Sending to %u\n", ipp->to);
 		send_ahead(package_done, ipp->to, ipp->tot_lenght, &addr);
 	}
 
@@ -1223,7 +1224,8 @@ void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_
 		}
 		else
 		{
-			printf("Package sent sucessfully.\n");
+			printf("Package Sent to:");
+			show_ip(destin);
 		}
 	}
 
@@ -1235,7 +1237,8 @@ void send_ahead(uint8_t *pack, uint32_t destin, uint32_t tsize, struct sockaddr_
 		}
 		else
 		{
-			printf("Package sent sucessfully.\n");
+			printf("Package Sent to:");
+			show_ip(destin);
 		}
 	}
 	
